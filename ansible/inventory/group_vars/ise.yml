@@ -1,0 +1,9 @@
+---
+# Common connection args consumed by cisco.ise.* modules.
+ise_login: &ise_login
+  ise_hostname: "{{ ise_hostname | default(lookup('env','ISE_HOST')) }}"
+  ise_username: "{{ ise_username | default(lookup('env','ISE_USERNAME')) }}"
+  ise_password: "{{ ise_password | default(lookup('env','ISE_PASSWORD')) }}"
+  ise_verify: false
+  ise_wait_on_rate_limit: true
+  ise_debug: false

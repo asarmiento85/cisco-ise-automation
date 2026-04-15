@@ -1,0 +1,29 @@
+---
+# Switch-side config values consumed by switch playbooks/templates.
+
+# RADIUS (ISE) — set ise_host/radius_secret in vault
+radius_servers:
+  - name: ISE-PAN
+    host: "{{ ise_hostname }}"
+    auth_port: 1812
+    acct_port: 1813
+    key: "{{ radius_shared_secret }}"
+
+# CoA listener
+coa_source_interface: Vlan1
+
+# Device-tracking policy (IBNS 2.0 pattern)
+device_tracking_policy_name: IPDT_POLICY
+
+# Default dot1x access port template values
+dot1x:
+  host_mode: multi-auth        # single-host | multi-auth | multi-domain | multi-host
+  reauth_timer: 3600
+  tx_period: 10
+  max_reauth_req: 2
+  auth_order:                  # order ISE should authenticate in
+    - dot1x
+    - mab
+  critical_vlan: 999
+  guest_vlan: 900
+  auth_fail_vlan: 901

@@ -1,0 +1,20 @@
+! Apply on access ports. Assumes policy-map DOT1X_MAB_POLICY + device-tracking policy exist.
+interface {{ interface }}
+ description {{ description | default('Dot1x access port') }}
+ switchport mode access
+ switchport access vlan {{ access_vlan }}
+ switchport voice vlan {{ voice_vlan | default(omit) }}
+ authentication periodic
+ authentication timer reauthenticate {{ dot1x.reauth_timer }}
+ access-session host-mode {{ dot1x.host_mode }}
+ access-session closed
+ access-session port-control auto
+ mab
+ dot1x pae authenticator
+ dot1x timeout tx-period {{ dot1x.tx_period }}
+ dot1x max-reauth-req {{ dot1x.max_reauth_req }}
+ spanning-tree portfast
+ spanning-tree bpduguard enable
+ device-tracking attach-policy {{ device_tracking_policy_name }}
+ service-policy type control subscriber DOT1X_MAB_POLICY
+!

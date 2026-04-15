@@ -1,0 +1,62 @@
+---
+# Bootstrap an ISE PAN after manual install:
+#   - Verify ERS/OpenAPI reachable
+#   - Create baseline Network Device Groups (Location, Device Type)
+#   - Seed an internal identity group for lab testing
+#
+# Prereq: ERS enabled and an ERS admin exists (see docs/01-vm-install.md).
+
+- name: ISE — bootstrap baseline objects
+  hosts: ise
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  tasks:
+
+    - name: Reach ISE ERS (sanity check)
+      ansible.builtin.uri:
+        url: "https://{{ ise_hostname }}/ers/config/networkdevice?size=1"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+        status_code: [200, 401]
+      register: ers_check
+
+    - name: Fail loudly if ERS not reachable / creds bad
+      ansible.builtin.fail:
+        msg: "ERS sanity check failed ({{ ers_check.status }}). Verify ERS is enabled and credentials."
+      when: ers_check.status != 200
+
+    - name: Ensure Location NDGs exist
+      cisco.ise.network_device_group:
+        <<: *ise_login
+        state: present
+        name: "Location#All Locations#{{ item }}"
+        ndgtype: Location
+      loop:
+        - Lab
+        - HQ
+        - Branch
+
+    - name: Ensure Device Type NDGs exist
+      cisco.ise.network_device_group:
+        <<: *ise_login
+        state: present
+        name: "Device Type#All Device Types#{{ item }}"
+        ndgtype: "Device Type"
+      loop:
+        - Switch
+        - WLC
+        - Router
+        - Firewall
+
+    - name: Ensure lab internal identity group
+      cisco.ise.identity_group:
+        <<: *ise_login
+        state: present
+        name: Lab_Users
+        description: Lab users for dot1x testing
+        parent: "NAC Group:NAC:IdentityGroups:User Identity Groups"

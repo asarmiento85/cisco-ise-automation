@@ -1,0 +1,34 @@
+---
+# Register every host in the `switches` group as a Network Device (NAD) in ISE.
+
+- name: ISE — add switches as Network Devices
+  hosts: ise
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  tasks:
+
+    - name: Add / update NAD for each switch
+      cisco.ise.network_device:
+        <<: *ise_login
+        state: present
+        name: "{{ hostvars[item].inventory_hostname }}"
+        description: "Managed by Ansible"
+        network_device_iplist:
+          - ipaddress: "{{ hostvars[item].ansible_host }}"
+            mask: 32
+        network_device_group_list:
+          - "Location#All Locations#Lab"
+          - "Device Type#All Device Types#Switch"
+          - "IPSEC#Is IPSEC Device#No"
+        authentication_settings:
+          network_protocol: RADIUS
+          radius_shared_secret: "{{ radius_shared_secret }}"
+          enable_key_wrap: false
+          dtls_required: false
+          enabled: true
+        profile_name: Cisco
+        coa_port: 1700
+      loop: "{{ groups['switches'] }}"
+      loop_control:
+        label: "{{ item }}"

@@ -1,0 +1,12 @@
+---
+# Pulled from ansible/vault/secrets.yml (ansible-vault encrypted).
+# Do NOT put real values here.
+
+# Examples (override in vault):
+# ise_hostname: ise.lab.local
+# ise_username: ersadmin
+# ise_password: vault_me
+# switch_username: admin
+# switch_password: vault_me
+# switch_enable: vault_me
+# radius_shared_secret: vault_me

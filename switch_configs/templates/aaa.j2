@@ -1,0 +1,32 @@
+! AAA + RADIUS for ISE — IBNS 2.0 friendly
+aaa new-model
+!
+{% for r in radius_servers %}
+radius server {{ r.name }}
+ address ipv4 {{ r.host }} auth-port {{ r.auth_port }} acct-port {{ r.acct_port }}
+ key {{ r.key }}
+ automate-tester username probe probe-on
+!
+{% endfor %}
+aaa group server radius ISE
+{% for r in radius_servers %}
+ server name {{ r.name }}
+{% endfor %}
+ ip radius source-interface {{ coa_source_interface }}
+!
+aaa authentication dot1x default group ISE
+aaa authorization network default group ISE
+aaa accounting dot1x default start-stop group ISE
+aaa accounting update newinfo periodic 2880
+aaa server radius dynamic-author
+ client {{ radius_servers[0].host }} server-key {{ radius_servers[0].key }}
+ auth-type any
+!
+radius-server vsa send authentication
+radius-server vsa send accounting
+radius-server attribute 6 on-for-login-auth
+radius-server attribute 8 include-in-access-req
+radius-server attribute 25 access-request include
+radius-server attribute 31 mac format ietf upper-case
+radius-server attribute 31 send nas-port-detail
+!

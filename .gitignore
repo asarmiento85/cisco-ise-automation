@@ -1,0 +1,50 @@
+# Secrets
+.env
+.env.*
+!.env.example
+ansible/vault/*.yml
+!ansible/vault/.gitkeep
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+
+# uv
+uv.lock
+
+# Ansible
+*.retry
+.ansible/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+
+# Rendered switch configs (may contain secrets)
+switch_configs/rendered/*
+!switch_configs/rendered/.gitkeep
+
+# VM / OVA artifacts
+*.ova
+*.iso
+*.vmdk
+*.vmx
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp

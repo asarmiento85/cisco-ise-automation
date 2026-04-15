@@ -1,0 +1,40 @@
+---
+# Configure AAA + global dot1x on switches so they can talk to ISE.
+# Run AFTER ise_network_devices.yml so ISE already knows about each switch.
+
+- name: Switches — AAA + dot1x baseline
+  hosts: switches
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  tasks:
+
+    - name: Render RADIUS + AAA config
+      ansible.builtin.set_fact:
+        aaa_config: "{{ lookup('template', '../../switch_configs/templates/aaa.j2') }}"
+
+    - name: Render global dot1x config
+      ansible.builtin.set_fact:
+        dot1x_config: "{{ lookup('template', '../../switch_configs/templates/dot1x_global.j2') }}"
+
+    - name: Push AAA / RADIUS
+      cisco.ios.ios_config:
+        src: ../../switch_configs/templates/aaa.j2
+        save_when: modified
+
+    - name: Push global dot1x
+      cisco.ios.ios_config:
+        src: ../../switch_configs/templates/dot1x_global.j2
+        save_when: modified
+
+    - name: Test RADIUS reachability
+      cisco.ios.ios_command:
+        commands:
+          - "test aaa group radius server ISE-PAN {{ test_username | default('probe') }} {{ test_password | default('probe') }} new-code"
+      register: radius_test
+      failed_when: false
+      changed_when: false
+
+    - name: Show RADIUS test result
+      ansible.builtin.debug:
+        var: radius_test.stdout_lines
