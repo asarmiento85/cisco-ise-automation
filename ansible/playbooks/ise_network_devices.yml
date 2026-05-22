@@ -1,34 +1,68 @@
 ---
-# Register every host in the `switches` group as a Network Device (NAD) in ISE.
+# Register WLCs + any wired switches as Network Devices (NADs) in ISE,
+# using direct ERS REST calls (more reliable than cisco.ise module schemas).
 
-- name: ISE — add switches as Network Devices
+- name: ISE — add NADs (WLCs + switches)
   hosts: ise
   gather_facts: false
   vars_files:
     - ../vault/secrets.yml
+  vars:
+    nad_targets: "{{ (groups['wlc'] | default([])) + (groups['switches'] | default([])) }}"
+    ers_base: "https://{{ ise_hostname }}/ers/config"
   tasks:
 
-    - name: Add / update NAD for each switch
-      cisco.ise.network_device:
-        <<: *ise_login
-        state: present
-        name: "{{ hostvars[item].inventory_hostname }}"
-        description: "Managed by Ansible"
-        network_device_iplist:
-          - ipaddress: "{{ hostvars[item].ansible_host }}"
-            mask: 32
-        network_device_group_list:
-          - "Location#All Locations#Lab"
-          - "Device Type#All Device Types#Switch"
-          - "IPSEC#Is IPSEC Device#No"
-        authentication_settings:
-          network_protocol: RADIUS
-          radius_shared_secret: "{{ radius_shared_secret }}"
-          enable_key_wrap: false
-          dtls_required: false
-          enabled: true
-        profile_name: Cisco
-        coa_port: 1700
-      loop: "{{ groups['switches'] }}"
+    - name: Show what we're about to register
+      ansible.builtin.debug:
+        msg: "Will register {{ nad_targets | length }} NAD(s): {{ nad_targets }}"
+
+    - name: Check if NAD already exists
+      ansible.builtin.uri:
+        url: "{{ ers_base }}/networkdevice/name/{{ item }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+        status_code: [200, 404]
+      loop: "{{ nad_targets }}"
+      register: existing_nads
+
+    - name: Create missing NADs via ERS
+      ansible.builtin.uri:
+        url: "{{ ers_base }}/networkdevice"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          NetworkDevice:
+            name: "{{ item.item }}"
+            description: "Managed by Ansible — dCloud lab"
+            profileName: Cisco
+            coaPort: 1700
+            authenticationSettings:
+              networkProtocol: RADIUS
+              radiusSharedSecret: "{{ radius_shared_secret }}"
+              enableKeyWrap: false
+            NetworkDeviceIPList:
+              - ipaddress: "{{ hostvars[item.item].ansible_host }}"
+                mask: 32
+            NetworkDeviceGroupList:
+              - "Location#All Locations#Lab"
+              - >-
+                Device Type#All Device Types#{{
+                  'WLC' if item.item in (groups['wlc'] | default([])) else 'Switch'
+                }}
+              - "IPSEC#Is IPSEC Device#No"
+        status_code: [201]
+      loop: "{{ existing_nads.results }}"
+      when: item.status == 404
       loop_control:
-        label: "{{ item }}"
+        label: "{{ item.item }}"

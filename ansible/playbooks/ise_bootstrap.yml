@@ -1,16 +1,21 @@
 ---
 # Bootstrap an ISE PAN after manual install:
-#   - Verify ERS/OpenAPI reachable
+#   - Verify ERS reachable
 #   - Create baseline Network Device Groups (Location, Device Type)
 #   - Seed an internal identity group for lab testing
-#
-# Prereq: ERS enabled and an ERS admin exists (see docs/01-vm-install.md).
 
 - name: ISE — bootstrap baseline objects
   hosts: ise
   gather_facts: false
   vars_files:
     - ../vault/secrets.yml
+  vars:
+    ise_login: &ise_login
+      ise_hostname: "{{ ise_hostname }}"
+      ise_username: "{{ ise_username }}"
+      ise_password: "{{ ise_password }}"
+      ise_verify: false
+      ise_wait_on_rate_limit: true
   tasks:
 
     - name: Reach ISE ERS (sanity check)
@@ -35,7 +40,7 @@
         <<: *ise_login
         state: present
         name: "Location#All Locations#{{ item }}"
-        ndgtype: Location
+        othername: Location
       loop:
         - Lab
         - HQ
@@ -46,7 +51,7 @@
         <<: *ise_login
         state: present
         name: "Device Type#All Device Types#{{ item }}"
-        ndgtype: "Device Type"
+        othername: "Device Type"
       loop:
         - Switch
         - WLC
@@ -54,7 +59,7 @@
         - Firewall
 
     - name: Ensure lab internal identity group
-      cisco.ise.identity_group:
+      cisco.ise.identitygroup:
         <<: *ise_login
         state: present
         name: Lab_Users

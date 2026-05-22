@@ -1,5 +1,10 @@
 .PHONY: help setup py-sync ansible-deps lint test bootstrap add-nads health
 
+# macOS fork-safety workaround for Ansible workers on Python 3.13+
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+export no_proxy=*
+VAULT_PASS_FILE ?= /tmp/.vault_pass
+
 help:
 	@echo "Targets:"
 	@echo "  setup         - Install python deps (uv) and Ansible collections"
@@ -27,10 +32,10 @@ test:
 	cd python && uv run pytest
 
 bootstrap:
-	cd ansible && ansible-playbook playbooks/ise_bootstrap.yml --ask-vault-pass
+	cd ansible && ansible-playbook playbooks/ise_bootstrap.yml --vault-password-file $(VAULT_PASS_FILE)
 
 add-nads:
-	cd ansible && ansible-playbook playbooks/ise_network_devices.yml --ask-vault-pass
+	cd ansible && ansible-playbook playbooks/ise_network_devices.yml --vault-password-file $(VAULT_PASS_FILE)
 
 health:
 	cd python && uv run python -m scripts.health_check

@@ -12,13 +12,23 @@ OpenAPI base: /api/v1/
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import urljoin
 
 import httpx
+from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+# Walk up from this file to find the nearest .env (repo root).
+_HERE = Path(__file__).resolve()
+for _parent in _HERE.parents:
+    _candidate = _parent / ".env"
+    if _candidate.exists():
+        load_dotenv(_candidate)
+        break
 
 
 class ISESettings(BaseSettings):
