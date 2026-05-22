@@ -1,0 +1,73 @@
+---
+# Create a WPA2-Enterprise (802.1X) SSID backed by ISE.
+#
+# Object model on C9800:
+#   WLAN profile  →  defines SSID + security (dot1x)
+#   Policy profile → defines VLAN, AAA-override, accounting
+#   Policy tag    →  binds WLAN profile ↔ Policy profile
+#   (Site/RF tags would bind to APs - none in this pod, so we skip)
+
+- name: WLC - create dot1x SSID via ISE
+  hosts: wlc
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    ssid_name: dCloud-Corp
+    wlan_profile: lab-dot1x-wlan
+    wlan_id: 17
+    policy_profile: lab-dot1x-policy
+    policy_tag: lab-tag
+    client_vlan: "default"      # use default VLAN; change later when we add a client VLAN
+    method_list_authn: ISE-DOT1X
+    method_list_authz: ISE-NETWORK
+    method_list_acct: ISE-ACCT
+  tasks:
+
+    - name: Configure Policy Profile (VLAN + AAA-override + accounting)
+      cisco.ios.ios_config:
+        lines:
+          - "description ansible-managed"
+          - "vlan {{ client_vlan }}"
+          - "aaa-override"
+          - "accounting-list {{ method_list_acct }}"
+          - "no shutdown"
+        parents: "wireless profile policy {{ policy_profile }}"
+
+    - name: Configure WLAN Profile (SSID + WPA2-Enterprise + dot1x list)
+      cisco.ios.ios_config:
+        lines:
+          - "no shutdown"
+          - "security wpa wpa2"
+          - "security wpa wpa2 ciphers aes"
+          - "security wpa akm dot1x"
+          - "security dot1x authentication-list {{ method_list_authn }}"
+        parents: "wlan {{ wlan_profile }} {{ wlan_id }} {{ ssid_name }}"
+
+    - name: Bind WLAN to Policy Profile via Policy Tag
+      cisco.ios.ios_config:
+        lines:
+          - "description ansible-managed"
+          - "wlan {{ wlan_profile }} policy {{ policy_profile }}"
+        parents: "wireless tag policy {{ policy_tag }}"
+
+    - name: Save config
+      cisco.ios.ios_command:
+        commands:
+          - command: "write memory"
+            prompt: "\\[confirm\\]"
+            answer: "y"
+      changed_when: true
+
+    - name: Show WLAN summary
+      cisco.ios.ios_command:
+        commands:
+          - "show wlan summary"
+          - "show wireless profile policy summary"
+          - "show wireless tag policy summary"
+          - "show wlan id {{ wlan_id }}"
+      register: wlan_state
+
+    - name: Display
+      ansible.builtin.debug:
+        var: wlan_state.stdout_lines

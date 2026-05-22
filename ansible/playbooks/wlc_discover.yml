@@ -1,0 +1,20 @@
+---
+# Read-only: dump key facts about the WLC so we know what to target.
+- name: WLC — discovery
+  hosts: wlc
+  gather_facts: false
+  tasks:
+    - name: Collect identifying state
+      cisco.ios.ios_command:
+        commands:
+          - show version | include IOS XE Software|uptime is|System image
+          - show wireless interface summary
+          - show ip interface brief | exclude unassigned
+          - show running-config | include radius server|aaa new-model|aaa group server|aaa authentication dot1x|aaa authorization network|aaa accounting|dynamic-author|wireless mgmt-interface
+          - show wlan summary
+          - show wireless tag policy summary
+      register: facts
+
+    - name: Display
+      ansible.builtin.debug:
+        var: facts.stdout_lines

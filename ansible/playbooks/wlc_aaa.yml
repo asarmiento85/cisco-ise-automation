@@ -1,0 +1,88 @@
+---
+# Push RADIUS + AAA method lists on the vWLC so it can talk to ISE.
+# Idempotent: cisco.ios.ios_config diffs against running-config.
+
+- name: WLC — AAA + RADIUS pointing at ISE
+  hosts: wlc
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    radius_server_name: ISE-PAN
+    radius_group_name: ISE
+    radius_source_interface: Vlan11   # matches NAD IP 198.19.11.10
+    method_list_authn: ISE-DOT1X
+    method_list_authz: ISE-NETWORK
+    method_list_acct: ISE-ACCT
+  tasks:
+
+    - name: Configure RADIUS server entry
+      cisco.ios.ios_config:
+        lines:
+          - "address ipv4 {{ ise_hostname }} auth-port 1812 acct-port 1813"
+          - "key {{ radius_shared_secret }}"
+        parents: "radius server {{ radius_server_name }}"
+
+    - name: Configure RADIUS server group + source-interface
+      cisco.ios.ios_config:
+        lines:
+          - "server name {{ radius_server_name }}"
+          - "ip radius source-interface {{ radius_source_interface }}"
+        parents: "aaa group server radius {{ radius_group_name }}"
+
+    - name: Configure AAA method lists
+      cisco.ios.ios_config:
+        lines:
+          - "aaa authentication dot1x {{ method_list_authn }} group {{ radius_group_name }}"
+          - "aaa authorization network {{ method_list_authz }} group {{ radius_group_name }}"
+          - "aaa accounting identity {{ method_list_acct }} start-stop group {{ radius_group_name }}"
+
+    - name: Configure CoA (dynamic-author) listener
+      cisco.ios.ios_config:
+        lines:
+          - "client {{ ise_hostname }} server-key {{ radius_shared_secret }}"
+          - "auth-type any"
+        parents: "aaa server radius dynamic-author"
+
+    - name: Configure RADIUS VSA / attributes
+      cisco.ios.ios_config:
+        lines:
+          - "radius-server vsa send authentication"
+          - "radius-server vsa send accounting"
+          - "radius-server attribute 6 on-for-login-auth"
+          - "radius-server attribute 8 include-in-access-req"
+          - "radius-server attribute 25 access-request include"
+          - "radius-server attribute 31 mac format ietf upper-case"
+          - "radius-server attribute 31 send nas-port-detail"
+          - "radius-server dead-criteria time 5 tries 3"
+          - "radius-server deadtime 5"
+
+    - name: Save running-config to startup
+      cisco.ios.ios_command:
+        commands:
+          - command: "write memory"
+            prompt: "\\[confirm\\]"
+            answer: "y"
+      changed_when: true
+
+    - name: Verify RADIUS server reachable (test aaa)
+      cisco.ios.ios_command:
+        commands:
+          - "test aaa group {{ radius_group_name }} probe probe new-code"
+      register: radius_test
+      failed_when: false
+      changed_when: false
+
+    - name: Show RADIUS test result
+      ansible.builtin.debug:
+        var: radius_test.stdout_lines
+
+    - name: Show post-config RADIUS state
+      cisco.ios.ios_command:
+        commands:
+          - "show aaa servers | include RADIUS:|State|Authen"
+      register: aaa_state
+
+    - name: Display AAA server state
+      ansible.builtin.debug:
+        var: aaa_state.stdout_lines
