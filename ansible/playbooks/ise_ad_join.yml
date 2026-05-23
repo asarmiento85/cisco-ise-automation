@@ -1,0 +1,174 @@
+---
+# Join ISE to Active Directory and pull in the AD groups we need for policy.
+#
+# Flow:
+#   1. Create the AD join point object in ISE
+#   2. Join the domain (creates a computer object in AD, requires AD admin creds)
+#   3. Query AD for groups via ISE
+#   4. Add 'Domain Users' and 'Domain Computers' to the join point so they're
+#      available as conditions in authorization policies.
+#
+# Idempotent: each step checks current state first.
+
+- name: ISE - join Active Directory
+  hosts: ise
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    ers_base: "https://{{ ise_hostname }}/ers/config"
+    ad_join_point_name: "{{ ad_netbios }}"   # "dcloud"
+    ad_domain_name: "{{ ad_domain }}"        # "dcloud.cisco.com"
+    # Groups we want ISE to track for policy use
+    wanted_group_names:
+      - "Domain Users"
+      - "Domain Computers"
+  tasks:
+
+    # ---------------------------------------------------------------
+    # 1. Create join point (object representing the AD integration)
+    # ---------------------------------------------------------------
+    - name: Look up existing AD join point
+      ansible.builtin.uri:
+        url: "{{ ers_base }}/activedirectory/name/{{ ad_join_point_name }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+        status_code: [200, 404]
+      register: existing_ad
+
+    - name: Create AD join point
+      ansible.builtin.uri:
+        url: "{{ ers_base }}/activedirectory"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          ERSActiveDirectory:
+            name: "{{ ad_join_point_name }}"
+            description: "AD join point (managed by Ansible)"
+            domain: "{{ ad_domain_name }}"
+            enableDomainAllowedList: true
+            adScopesNames: "Default_Scope"
+        status_code: [201]
+      when: existing_ad.status == 404
+      register: created_ad
+
+    - name: Re-fetch join point so we have an ID
+      ansible.builtin.uri:
+        url: "{{ ers_base }}/activedirectory/name/{{ ad_join_point_name }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+        status_code: [200]
+      register: ad_obj
+
+    - name: Set join point id fact
+      ansible.builtin.set_fact:
+        ad_id: "{{ ad_obj.json.ERSActiveDirectory.id }}"
+
+    - name: Show join point
+      ansible.builtin.debug:
+        msg: "AD join point '{{ ad_join_point_name }}' has id {{ ad_id }}"
+
+    # ---------------------------------------------------------------
+    # 2. Join the domain (enrolls ISE as a computer object in AD)
+    # ---------------------------------------------------------------
+    - name: Join ISE to the domain (creates AD computer object)
+      ansible.builtin.uri:
+        url: "{{ ers_base }}/activedirectory/{{ ad_id }}/joinDomainWithAllNodes"
+        method: PUT
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          OperationAdditionalData:
+            additionalData:
+              - name: "username"
+                value: "{{ ad_bind_user }}"
+              - name: "password"
+                value: "{{ ad_bind_password }}"
+        # 200/204 = joined, 400 commonly returned when already joined
+        status_code: [200, 201, 204, 400]
+      register: join_result
+
+    - name: Show join result
+      ansible.builtin.debug:
+        msg: "Join HTTP {{ join_result.status }} - {{ join_result.json | default({}) }}"
+
+    # ---------------------------------------------------------------
+    # 3. Fetch groups visible in AD
+    # ---------------------------------------------------------------
+    - name: List AD groups visible to ISE
+      ansible.builtin.uri:
+        url: "{{ ers_base }}/activedirectory/{{ ad_id }}/getGroupsByDomain"
+        method: PUT
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          OperationAdditionalData:
+            additionalData:
+              - name: "domain"
+                value: "{{ ad_domain_name }}"
+        status_code: [200, 201]
+      register: ad_groups
+
+    - name: Filter to groups we want
+      ansible.builtin.set_fact:
+        target_groups: >-
+          {{
+            (ad_groups.json.ERSActiveDirectoryGroups.groups | default([]))
+            | selectattr('name', 'search', '(Domain Users|Domain Computers)$')
+            | list
+          }}
+
+    - name: Show groups we found
+      ansible.builtin.debug:
+        var: target_groups
+
+    # ---------------------------------------------------------------
+    # 4. Register those groups on the join point
+    # ---------------------------------------------------------------
+    - name: Add target AD groups to the join point
+      ansible.builtin.uri:
+        url: "{{ ers_base }}/activedirectory/{{ ad_id }}/addGroups"
+        method: PUT
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          ERSActiveDirectory:
+            id: "{{ ad_id }}"
+            name: "{{ ad_join_point_name }}"
+            adgroups:
+              groups: "{{ target_groups }}"
+        status_code: [200, 204]
+      when: target_groups | length > 0
