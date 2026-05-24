@@ -1,0 +1,397 @@
+---
+# MAB (MAC Authentication Bypass) for IoT-style devices that can't speak 802.1X.
+#
+# Builds:
+#   - Endpoint Identity Group 'Lab_IoT_Printers' (and Cameras)
+#   - Two seed endpoints (MAC) in each group
+#   - AuthZ profile 'IoT-Printers' (VLAN 30 + permit-all dACL)
+#                  'IoT-Cameras'  (VLAN 31 + permit-all dACL)
+#   - New policy set 'MAB-IoT' matching Service-Type=Call-Check
+#     (the standard signal a NAD sends for MAB)
+#   - AuthN: use Internal Endpoints, continue (NOT reject) on user-not-found
+#   - AuthZ: endpoint in Printers/Cameras -> matching profile; else deny
+
+- name: ISE - MAB + IoT endpoint groups
+  hosts: ise
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    ers: "https://{{ ise_hostname }}/ers/config"
+    api: "https://{{ ise_hostname }}/api/v1/policy/network-access"
+    printers_group: Lab_IoT_Printers
+    cameras_group: Lab_IoT_Cameras
+    printers_profile: IoT-Printers
+    cameras_profile: IoT-Cameras
+    printers_vlan: "30"
+    cameras_vlan: "31"
+    dacl_name: LAB-PERMIT-ALL              # reuse the dACL created earlier
+    mab_policy_set: "MAB-IoT"
+    seed_endpoints:
+      - { mac: "00:11:22:33:44:01", group: "{{ printers_group }}", desc: "Lab printer A" }
+      - { mac: "00:11:22:33:44:02", group: "{{ printers_group }}", desc: "Lab printer B" }
+      - { mac: "00:11:22:33:55:01", group: "{{ cameras_group }}",  desc: "Lab camera A"  }
+  tasks:
+
+    # ---------- Endpoint Identity Groups ----------
+    - name: Check Printers group
+      ansible.builtin.uri:
+        url: "{{ ers }}/endpointgroup/name/{{ printers_group }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: pg_check
+
+    - name: Create Printers group
+      ansible.builtin.uri:
+        url: "{{ ers }}/endpointgroup"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          EndPointGroup:
+            name: "{{ printers_group }}"
+            description: "IoT printers (managed by Ansible)"
+            systemDefined: false
+        status_code: [201]
+      when: pg_check.status == 404
+
+    - name: Check Cameras group
+      ansible.builtin.uri:
+        url: "{{ ers }}/endpointgroup/name/{{ cameras_group }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: cg_check
+
+    - name: Create Cameras group
+      ansible.builtin.uri:
+        url: "{{ ers }}/endpointgroup"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          EndPointGroup:
+            name: "{{ cameras_group }}"
+            description: "IoT cameras (managed by Ansible)"
+            systemDefined: false
+        status_code: [201]
+      when: cg_check.status == 404
+
+    # ---------- Resolve group IDs ----------
+    - name: Fetch Printers group id
+      ansible.builtin.uri:
+        url: "{{ ers }}/endpointgroup/name/{{ printers_group }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: pg_obj
+
+    - name: Fetch Cameras group id
+      ansible.builtin.uri:
+        url: "{{ ers }}/endpointgroup/name/{{ cameras_group }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: cg_obj
+
+    - name: Set group ids
+      ansible.builtin.set_fact:
+        printers_group_id: "{{ pg_obj.json.EndPointGroup.id }}"
+        cameras_group_id: "{{ cg_obj.json.EndPointGroup.id }}"
+
+    # ---------- Seed endpoints ----------
+    - name: Check endpoint exists
+      ansible.builtin.uri:
+        url: "{{ ers }}/endpoint/name/{{ item.mac }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      loop: "{{ seed_endpoints }}"
+      register: ep_check
+
+    - name: Create endpoint
+      ansible.builtin.uri:
+        url: "{{ ers }}/endpoint"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          ERSEndPoint:
+            name: "{{ item.item.mac }}"
+            description: "{{ item.item.desc }}"
+            mac: "{{ item.item.mac }}"
+            groupId: "{{ printers_group_id if item.item.group == printers_group else cameras_group_id }}"
+            staticGroupAssignment: true
+            staticProfileAssignment: false
+        status_code: [201]
+      loop: "{{ ep_check.results }}"
+      when: item.status == 404
+      loop_control:
+        label: "{{ item.item.mac }} -> {{ item.item.group }}"
+
+    # ---------- AuthZ profiles ----------
+    - name: Check Printers authZ profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile/name/{{ printers_profile }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: pp_check
+
+    - name: Create Printers authZ profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          AuthorizationProfile:
+            name: "{{ printers_profile }}"
+            description: "IoT Printers - VLAN {{ printers_vlan }}"
+            accessType: "ACCESS_ACCEPT"
+            authzProfileType: "SWITCH"
+            vlan: { nameID: "{{ printers_vlan }}", tagID: 1 }
+            daclName: "{{ dacl_name }}"
+            trackMovement: false
+        status_code: [201]
+      when: pp_check.status == 404
+
+    - name: Check Cameras authZ profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile/name/{{ cameras_profile }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: cp_check
+
+    - name: Create Cameras authZ profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          AuthorizationProfile:
+            name: "{{ cameras_profile }}"
+            description: "IoT Cameras - VLAN {{ cameras_vlan }}"
+            accessType: "ACCESS_ACCEPT"
+            authzProfileType: "SWITCH"
+            vlan: { nameID: "{{ cameras_vlan }}", tagID: 1 }
+            daclName: "{{ dacl_name }}"
+            trackMovement: false
+        status_code: [201]
+      when: cp_check.status == 404
+
+    # ---------- MAB policy set ----------
+    - name: List policy sets
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: psets
+
+    - name: Find existing MAB policy set
+      ansible.builtin.set_fact:
+        existing_mab_ps: >-
+          {{
+            (psets.json.response | default([]))
+            | selectattr('name', 'equalto', mab_policy_set)
+            | list | first | default(none)
+          }}
+
+    - name: Create MAB policy set
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          name: "{{ mab_policy_set }}"
+          description: "MAB for IoT endpoints (managed by Ansible)"
+          isProxy: false
+          serviceName: "Default Network Access"
+          state: enabled
+          condition:
+            conditionType: ConditionAttributes
+            isNegate: false
+            dictionaryName: Radius
+            attributeName: Service-Type
+            operator: equals
+            attributeValue: "Call Check"
+        status_code: [200, 201]
+      register: created_mab_ps
+      when: existing_mab_ps is none
+
+    - name: Resolve MAB policy set id
+      ansible.builtin.set_fact:
+        mab_ps_id: >-
+          {{
+            (created_mab_ps.json.response.id
+              if (existing_mab_ps is none and created_mab_ps.json is defined)
+              else existing_mab_ps.id)
+          }}
+
+    # ---------- AuthN: use Internal Endpoints, continue if not found ----------
+    - name: List MAB authN rules
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ mab_ps_id }}/authentication"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: mab_authn
+
+    - name: Point MAB default authN at Internal Endpoints
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ mab_ps_id }}/authentication/{{ item.rule.id }}"
+        method: PUT
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          rule:
+            id: "{{ item.rule.id }}"
+            name: "{{ item.rule.name }}"
+            default: true
+            state: enabled
+          identitySourceName: "Internal Endpoints"
+          ifAuthFail: REJECT
+          ifUserNotFound: CONTINUE      # important for MAB: unknown MACs fall to authZ
+          ifProcessFail: DROP
+        status_code: [200, 204]
+      loop: "{{ mab_authn.json.response }}"
+      when: item.rule.default | default(false)
+      loop_control:
+        label: "{{ item.rule.name }}"
+
+    # ---------- AuthZ rules ----------
+    - name: List MAB authZ rules
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ mab_ps_id }}/authorization"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: mab_authz
+
+    - name: Existing MAB authZ names
+      ansible.builtin.set_fact:
+        mab_authz_names: "{{ mab_authz.json.response | map(attribute='rule.name') | list }}"
+
+    - name: 'Printers -> {{ printers_profile }}'
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ mab_ps_id }}/authorization"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          rule:
+            name: "IoT Printers - Permit"
+            default: false
+            state: enabled
+            condition:
+              conditionType: ConditionAttributes
+              isNegate: false
+              dictionaryName: "IdentityGroup"
+              attributeName: "Name"
+              operator: equals
+              attributeValue: "Endpoint Identity Groups:{{ printers_group }}"
+          profile:
+            - "{{ printers_profile }}"
+        status_code: [200, 201]
+      when: "'IoT Printers - Permit' not in mab_authz_names"
+
+    - name: 'Cameras -> {{ cameras_profile }}'
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ mab_ps_id }}/authorization"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          rule:
+            name: "IoT Cameras - Permit"
+            default: false
+            state: enabled
+            condition:
+              conditionType: ConditionAttributes
+              isNegate: false
+              dictionaryName: "IdentityGroup"
+              attributeName: "Name"
+              operator: equals
+              attributeValue: "Endpoint Identity Groups:{{ cameras_group }}"
+          profile:
+            - "{{ cameras_profile }}"
+        status_code: [200, 201]
+      when: "'IoT Cameras - Permit' not in mab_authz_names"
+
+    - name: Final state
+      ansible.builtin.debug:
+        msg:
+          - "Policy set: {{ mab_policy_set }} ({{ mab_ps_id }})"
+          - "Printers group id: {{ printers_group_id }}"
+          - "Cameras group id: {{ cameras_group_id }}"

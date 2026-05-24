@@ -4,6 +4,7 @@
 !.env.example
 ansible/vault/*.yml
 !ansible/vault/.gitkeep
+!ansible/vault/secrets.example.yml
 
 # Python
 .venv/
@@ -48,3 +49,10 @@ switch_configs/rendered/*
 .idea/
 .vscode/
 *.swp
+
+# Per-snapshot backup directories — keep local only. Even though the
+# export script redacts known secret fields, snapshots capture lab-specific
+# IDs, IPs, and operational state that doesn't belong in a shared repo.
+# Remove these lines if you want every local backup tracked.
+backups/*/
+backups/latest

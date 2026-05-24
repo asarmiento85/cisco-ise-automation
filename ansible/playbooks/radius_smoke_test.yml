@@ -8,8 +8,8 @@
 #   - Authorization rule for Domain Users returns PermitAccess
 #   - Negative case (bad password) yields Access-Reject
 #
-# Usage:  make radius-test  (or)  ansible-playbook playbooks/radius_smoke_test.yml \
-#           -e 'test_username=administrator test_password=C1sco12345' --vault-password-file ...
+# Usage:  make radius-test
+#   (override defaults with -e 'test_username=... test_password=...' if needed)
 
 - name: RADIUS end-to-end smoke test
   hosts: ubuntu-server
@@ -60,8 +60,36 @@
       changed_when: false
       failed_when: "'Access-Reject' not in neg.stdout"
 
+    - name: MAB test - known IoT printer MAC
+      ansible.builtin.shell: |
+        echo 'User-Name = 001122334401,
+              User-Password = 001122334401,
+              NAS-IP-Address = 198.18.133.100,
+              NAS-Port = 0,
+              Service-Type = Call-Check,
+              Calling-Station-Id = 00-11-22-33-44-01' | \
+          radclient -x 198.18.133.27:1812 auth '{{ radius_shared_secret }}'
+      register: mab_known
+      changed_when: false
+      failed_when: "'Access-Accept' not in mab_known.stdout"
+
+    - name: MAB test - unknown MAC
+      ansible.builtin.shell: |
+        echo 'User-Name = aabbccddeeff,
+              User-Password = aabbccddeeff,
+              NAS-IP-Address = 198.18.133.100,
+              NAS-Port = 0,
+              Service-Type = Call-Check,
+              Calling-Station-Id = aa-bb-cc-dd-ee-ff' | \
+          radclient -x 198.18.133.27:1812 auth '{{ radius_shared_secret }}'
+      register: mab_unknown
+      changed_when: false
+      failed_when: "'Access-Reject' not in mab_unknown.stdout"
+
     - name: Summary
       ansible.builtin.debug:
         msg:
-          - "Positive (valid AD password) -> {{ 'PASS Access-Accept' if 'Access-Accept' in pos.stdout else 'FAIL' }}"
-          - "Negative (wrong password)    -> {{ 'PASS Access-Reject' if 'Access-Reject' in neg.stdout else 'FAIL' }}"
+          - "AD positive (valid pw)        -> {{ 'PASS Access-Accept' if 'Access-Accept' in pos.stdout else 'FAIL' }}"
+          - "AD negative (wrong pw)        -> {{ 'PASS Access-Reject' if 'Access-Reject' in neg.stdout else 'FAIL' }}"
+          - "MAB positive (known IoT MAC)  -> {{ 'PASS Access-Accept' if 'Access-Accept' in mab_known.stdout else 'FAIL' }}"
+          - "MAB negative (unknown MAC)    -> {{ 'PASS Access-Reject' if 'Access-Reject' in mab_unknown.stdout else 'FAIL' }}"

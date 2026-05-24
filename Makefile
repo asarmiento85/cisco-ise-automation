@@ -40,5 +40,11 @@ add-nads:
 radius-test:
 	cd ansible && ansible-playbook playbooks/radius_smoke_test.yml --vault-password-file $(VAULT_PASS_FILE)
 
+backup:
+	cd python && uv run python -m scripts.export_config_backup
+
+backup-commit:
+	cd python && uv run python -m scripts.export_config_backup --commit
+
 health:
 	cd python && uv run python -m scripts.health_check
