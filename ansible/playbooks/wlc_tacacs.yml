@@ -1,0 +1,61 @@
+---
+# Configure the vWLC to use ISE for TACACS+ admin login.
+# Keeps local 'dcloud' user as fallback so we don't lock ourselves out.
+
+- name: WLC - TACACS+ for admin access via ISE
+  hosts: wlc
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    tacacs_server_name: ISE-TACACS
+    tacacs_group_name: ISE-TACACS-GRP
+    tacacs_source_interface: Vlan11
+  tasks:
+
+    - name: Configure TACACS+ server entry
+      cisco.ios.ios_config:
+        lines:
+          - "address ipv4 {{ ise_hostname }}"
+          - "key {{ radius_shared_secret }}"
+          - "single-connection"
+        parents: "tacacs server {{ tacacs_server_name }}"
+
+    - name: Configure TACACS+ group + source-interface
+      cisco.ios.ios_config:
+        lines:
+          - "server name {{ tacacs_server_name }}"
+          - "ip tacacs source-interface {{ tacacs_source_interface }}"
+        parents: "aaa group server tacacs+ {{ tacacs_group_name }}"
+
+    - name: Configure AAA login + exec authorization
+      cisco.ios.ios_config:
+        lines:
+          # 'local' as fallback so 'dcloud' user still works if ISE unreachable
+          - "aaa authentication login default group {{ tacacs_group_name }} local"
+          - "aaa authentication enable default group {{ tacacs_group_name }} enable"
+          - "aaa authorization exec default group {{ tacacs_group_name }} local if-authenticated"
+          - "aaa authorization commands 1 default group {{ tacacs_group_name }} local if-authenticated"
+          - "aaa authorization commands 15 default group {{ tacacs_group_name }} local if-authenticated"
+          - "aaa accounting exec default start-stop group {{ tacacs_group_name }}"
+          - "aaa accounting commands 1 default start-stop group {{ tacacs_group_name }}"
+          - "aaa accounting commands 15 default start-stop group {{ tacacs_group_name }}"
+
+    - name: Save running-config
+      cisco.ios.ios_command:
+        commands:
+          - command: "write memory"
+            prompt: "\\[confirm\\]"
+            answer: "y"
+      changed_when: true
+
+    - name: Verify TACACS server reachable
+      cisco.ios.ios_command:
+        commands:
+          - "show tacacs"
+          - "show running-config | section aaa authentication|aaa authorization|tacacs"
+      register: state
+
+    - name: Display
+      ansible.builtin.debug:
+        var: state.stdout_lines

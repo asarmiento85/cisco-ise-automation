@@ -1,0 +1,214 @@
+---
+# Create downloadable ACL + authZ profiles that push VLAN and dACL,
+# then rewire the Wireless-Dot1x-dCloud policy set to use them
+# instead of the built-in PermitAccess.
+
+- name: ISE - authZ profiles with VLAN + dACL
+  hosts: ise
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    ers: "https://{{ ise_hostname }}/ers/config"
+    api: "https://{{ ise_hostname }}/api/v1/policy/network-access"
+    policy_set_name: "Wireless-Dot1x-dCloud"
+    dacl_name: "LAB-PERMIT-ALL"
+    dacl_content: |
+      permit ip any any
+    users_profile: "Lab-Users-Profile"
+    computers_profile: "Lab-Computers-Profile"
+    users_vlan: "10"
+    computers_vlan: "20"
+  tasks:
+
+    # ---------- Downloadable ACL ----------
+    - name: Check if dACL exists
+      ansible.builtin.uri:
+        url: "{{ ers }}/downloadableacl/name/{{ dacl_name }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: dacl_check
+
+    - name: Create dACL
+      ansible.builtin.uri:
+        url: "{{ ers }}/downloadableacl"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          DownloadableAcl:
+            name: "{{ dacl_name }}"
+            description: "Lab permit-all dACL (managed by Ansible)"
+            dacl: "{{ dacl_content }}"
+            daclType: "IPV4"
+        status_code: [201]
+      when: dacl_check.status == 404
+
+    # ---------- AuthZ profile: users ----------
+    - name: Check users profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile/name/{{ users_profile }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: usersp_check
+
+    - name: Create users authZ profile (VLAN {{ users_vlan }} + dACL)
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          AuthorizationProfile:
+            name: "{{ users_profile }}"
+            description: "AD Domain Users - VLAN {{ users_vlan }} + permit-all dACL"
+            accessType: "ACCESS_ACCEPT"
+            authzProfileType: "SWITCH"
+            vlan:
+              nameID: "{{ users_vlan }}"
+              tagID: 1
+            daclName: "{{ dacl_name }}"
+            trackMovement: false
+        status_code: [201]
+      when: usersp_check.status == 404
+
+    # ---------- AuthZ profile: computers ----------
+    - name: Check computers profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile/name/{{ computers_profile }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: comp_check
+
+    - name: Create computers authZ profile (VLAN {{ computers_vlan }} + dACL)
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          AuthorizationProfile:
+            name: "{{ computers_profile }}"
+            description: "AD Domain Computers - VLAN {{ computers_vlan }} + permit-all dACL"
+            accessType: "ACCESS_ACCEPT"
+            authzProfileType: "SWITCH"
+            vlan:
+              nameID: "{{ computers_vlan }}"
+              tagID: 1
+            daclName: "{{ dacl_name }}"
+            trackMovement: false
+        status_code: [201]
+      when: comp_check.status == 404
+
+    # ---------- Repoint policy set authZ rules to new profiles ----------
+    - name: Get policy set id
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: psets
+
+    - name: Set ps_id
+      ansible.builtin.set_fact:
+        ps_id: >-
+          {{ (psets.json.response | selectattr('name','equalto', policy_set_name)
+               | list | first).id }}
+
+    - name: List authZ rules
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ ps_id }}/authorization"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: rules
+
+    - name: Update Domain Users rule -> users profile
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ ps_id }}/authorization/{{ item.rule.id }}"
+        method: PUT
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          rule:
+            id: "{{ item.rule.id }}"
+            name: "{{ item.rule.name }}"
+            default: false
+            state: enabled
+            condition: "{{ item.rule.condition }}"
+          profile:
+            - "{{ users_profile }}"
+        status_code: [200, 204]
+      loop: "{{ rules.json.response }}"
+      when: item.rule.name == 'AD Domain Users - Permit'
+      loop_control:
+        label: "{{ item.rule.name }}"
+
+    - name: Update Domain Computers rule -> computers profile
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ ps_id }}/authorization/{{ item.rule.id }}"
+        method: PUT
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          rule:
+            id: "{{ item.rule.id }}"
+            name: "{{ item.rule.name }}"
+            default: false
+            state: enabled
+            condition: "{{ item.rule.condition }}"
+          profile:
+            - "{{ computers_profile }}"
+        status_code: [200, 204]
+      loop: "{{ rules.json.response }}"
+      when: item.rule.name == 'AD Domain Computers - Permit'
+      loop_control:
+        label: "{{ item.rule.name }}"

@@ -1,0 +1,331 @@
+---
+# TACACS+ device admin in ISE for WLC management access.
+#
+#   - Adds TACACS+ shared secret to the vWLC NAD (next to its RADIUS settings)
+#   - Creates 2 TACACS profiles:
+#       WLC-Admin-Priv15  -> shell priv-lvl 15 (full admin)
+#       WLC-Helpdesk-Priv1 -> shell priv-lvl 1  (read only)
+#   - Creates Device Admin policy set 'WLC-TACACS-Admin' matching Device Type=WLC
+#   - AuthN: AD dcloud
+#   - AuthZ:
+#       Domain Admins -> WLC-Admin-Priv15
+#       Domain Users  -> WLC-Helpdesk-Priv1
+#       default       -> Deny (built-in)
+
+- name: ISE - TACACS+ device admin for WLC
+  hosts: ise
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    ers: "https://{{ ise_hostname }}/ers/config"
+    da_api: "https://{{ ise_hostname }}/api/v1/policy/device-admin"
+    tacacs_shared_secret: "{{ radius_shared_secret }}"  # reuse for simplicity
+    admin_profile: "WLC_Admin_Priv15"
+    helpdesk_profile: "WLC_Helpdesk_Priv1"
+    da_policy_set_name: "WLC-TACACS-Admin"
+    ad_join_point: "{{ ad_netbios }}"
+  tasks:
+
+    # ---------- Add TACACS+ to WLC NAD ----------
+    - name: Fetch existing WLC NAD
+      ansible.builtin.uri:
+        url: "{{ ers }}/networkdevice/name/vwlc-01"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: wlc_nad
+
+    - name: Set vwlc nad id
+      ansible.builtin.set_fact:
+        vwlc_id: "{{ wlc_nad.json.NetworkDevice.id }}"
+
+    - name: Enable TACACS+ on WLC NAD
+      ansible.builtin.uri:
+        url: "{{ ers }}/networkdevice/{{ vwlc_id }}"
+        method: PUT
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          NetworkDevice:
+            name: vwlc-01
+            description: "{{ wlc_nad.json.NetworkDevice.description | default('') }}"
+            profileName: "{{ wlc_nad.json.NetworkDevice.profileName }}"
+            coaPort: "{{ wlc_nad.json.NetworkDevice.coaPort }}"
+            NetworkDeviceIPList: "{{ wlc_nad.json.NetworkDevice.NetworkDeviceIPList }}"
+            NetworkDeviceGroupList: "{{ wlc_nad.json.NetworkDevice.NetworkDeviceGroupList }}"
+            authenticationSettings: "{{ wlc_nad.json.NetworkDevice.authenticationSettings }}"
+            tacacsSettings:
+              sharedSecret: "{{ tacacs_shared_secret }}"
+              connectModeOptions: ON_LEGACY
+        status_code: [200, 204]
+
+    # ---------- TACACS profiles ----------
+    - name: Check admin profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/tacacsprofile/name/{{ admin_profile }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: adminp_check
+
+    - name: Create admin profile (priv 15)
+      ansible.builtin.uri:
+        url: "{{ ers }}/tacacsprofile"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          TacacsProfile:
+            name: "{{ admin_profile }}"
+            description: "Full admin (priv 15) - WLC"
+            sessionAttributes:
+              sessionAttributeList:
+                - type: MANDATORY
+                  name: priv-lvl
+                  value: "15"
+        status_code: [201]
+      when: adminp_check.status == 404
+
+    - name: Check helpdesk profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/tacacsprofile/name/{{ helpdesk_profile }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: helpp_check
+
+    - name: Create helpdesk profile (priv 1)
+      ansible.builtin.uri:
+        url: "{{ ers }}/tacacsprofile"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          TacacsProfile:
+            name: "{{ helpdesk_profile }}"
+            description: "Helpdesk read-only (priv 1) - WLC"
+            sessionAttributes:
+              sessionAttributeList:
+                - type: MANDATORY
+                  name: priv-lvl
+                  value: "1"
+        status_code: [201]
+      when: helpp_check.status == 404
+
+    # ---------- Device Admin policy set ----------
+    - name: List Device Admin policy sets
+      ansible.builtin.uri:
+        url: "{{ da_api }}/policy-set"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: da_psets
+
+    - name: Find existing policy set
+      ansible.builtin.set_fact:
+        existing_da_ps: >-
+          {{
+            (da_psets.json.response | default([]))
+            | selectattr('name', 'equalto', da_policy_set_name)
+            | list | first | default(none)
+          }}
+
+    - name: Create Device Admin policy set
+      ansible.builtin.uri:
+        url: "{{ da_api }}/policy-set"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ da_policy_set_name }}"
+          description: "TACACS+ admin for WLCs"
+          isProxy: false
+          serviceName: "Default Device Admin"
+          state: enabled
+          condition:
+            conditionType: ConditionAttributes
+            isNegate: false
+            dictionaryName: DEVICE
+            attributeName: "Device Type"
+            operator: equals
+            attributeValue: "All Device Types#WLC"
+        status_code: [200, 201]
+      register: created_da_ps
+      when: existing_da_ps is none
+
+    - name: Resolve da_ps_id
+      ansible.builtin.set_fact:
+        da_ps_id: >-
+          {{
+            (created_da_ps.json.response.id
+              if (existing_da_ps is none and created_da_ps.json is defined)
+              else existing_da_ps.id)
+          }}
+
+    # ---------- AuthN: point to AD ----------
+    - name: List DA authN rules
+      ansible.builtin.uri:
+        url: "{{ da_api }}/policy-set/{{ da_ps_id }}/authentication"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: da_authn
+
+    - name: Update DA default authN -> AD
+      ansible.builtin.uri:
+        url: "{{ da_api }}/policy-set/{{ da_ps_id }}/authentication/{{ item.rule.id }}"
+        method: PUT
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          rule:
+            id: "{{ item.rule.id }}"
+            name: "{{ item.rule.name }}"
+            default: true
+            state: enabled
+          identitySourceName: "{{ ad_join_point }}"
+          ifAuthFail: REJECT
+          ifUserNotFound: REJECT
+          ifProcessFail: DROP
+        status_code: [200, 204]
+      loop: "{{ da_authn.json.response }}"
+      when: item.rule.default | default(false)
+      loop_control:
+        label: "{{ item.rule.name }}"
+
+    # ---------- AuthZ rules ----------
+    - name: List DA authZ rules
+      ansible.builtin.uri:
+        url: "{{ da_api }}/policy-set/{{ da_ps_id }}/authorization"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: da_authz
+
+    - name: existing DA authZ names
+      ansible.builtin.set_fact:
+        da_existing_names: "{{ da_authz.json.response | map(attribute='rule.name') | list }}"
+
+    - name: 'Domain Admins -> {{ admin_profile }}'
+      ansible.builtin.uri:
+        url: "{{ da_api }}/policy-set/{{ da_ps_id }}/authorization"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          rule:
+            name: "AD Domain Admins - Full"
+            default: false
+            state: enabled
+            condition:
+              conditionType: ConditionAttributes
+              isNegate: false
+              dictionaryName: "{{ ad_join_point }}"
+              attributeName: ExternalGroups
+              operator: equals
+              attributeValue: "{{ ad_domain }}/Users/Domain Admins"
+          profile: "{{ admin_profile }}"
+          commands:
+            - "PermitAllCommands"
+        status_code: [200, 201]
+      when: "'AD Domain Admins - Full' not in da_existing_names"
+
+    - name: 'Domain Users -> {{ helpdesk_profile }}'
+      ansible.builtin.uri:
+        url: "{{ da_api }}/policy-set/{{ da_ps_id }}/authorization"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          rule:
+            name: "AD Domain Users - Readonly"
+            default: false
+            state: enabled
+            condition:
+              conditionType: ConditionAttributes
+              isNegate: false
+              dictionaryName: "{{ ad_join_point }}"
+              attributeName: ExternalGroups
+              operator: equals
+              attributeValue: "{{ ad_domain }}/Users/Domain Users"
+          profile: "{{ helpdesk_profile }}"
+          commands:
+            - "PermitAllCommands"
+        status_code: [200, 201]
+      when: "'AD Domain Users - Readonly' not in da_existing_names"
+
+    - name: Show final DA authZ rule names
+      ansible.builtin.uri:
+        url: "{{ da_api }}/policy-set/{{ da_ps_id }}/authorization"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: final
+
+    - name: Display
+      ansible.builtin.debug:
+        msg: "{{ final.json.response | map(attribute='rule.name') | list }}"
