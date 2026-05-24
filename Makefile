@@ -37,5 +37,8 @@ bootstrap:
 add-nads:
 	cd ansible && ansible-playbook playbooks/ise_network_devices.yml --vault-password-file $(VAULT_PASS_FILE)
 
+radius-test:
+	cd ansible && ansible-playbook playbooks/radius_smoke_test.yml --vault-password-file $(VAULT_PASS_FILE)
+
 health:
 	cd python && uv run python -m scripts.health_check

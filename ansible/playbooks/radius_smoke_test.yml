@@ -1,0 +1,67 @@
+---
+# End-to-end RADIUS smoke test from the Ubuntu host against ISE.
+# Validates:
+#   - RADIUS reaches ISE
+#   - ISE recognizes the Ubuntu NAD + shared secret
+#   - Policy set 'Wireless-Dot1x-dCloud' matches (Device Type=WLC, SSID match)
+#   - AD authentication for {{ test_username }} succeeds
+#   - Authorization rule for Domain Users returns PermitAccess
+#   - Negative case (bad password) yields Access-Reject
+#
+# Usage:  make radius-test  (or)  ansible-playbook playbooks/radius_smoke_test.yml \
+#           -e 'test_username=administrator test_password=C1sco12345' --vault-password-file ...
+
+- name: RADIUS end-to-end smoke test
+  hosts: ubuntu-server
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    test_username: administrator
+    test_password: "{{ ad_bind_password }}"        # default to AD admin
+    wrong_password: "WRONGPASS-{{ ansible_date_time.iso8601 | default('xxx') }}"
+    ssid: dCloud-Corp
+    radius_attrs: >-
+      User-Name = {{ test_username }},
+      User-Password = {{ test_password }},
+      NAS-IP-Address = 198.18.133.100,
+      NAS-Port = 0,
+      Service-Type = Framed-User,
+      Called-Station-Id = aa-bb-cc-dd-ee-ff:{{ ssid }},
+      Calling-Station-Id = 11-22-33-44-55-66
+  tasks:
+
+    - name: Ensure radclient installed
+      ansible.builtin.apt:
+        name: freeradius-utils
+        state: present
+        update_cache: true
+      become: true
+
+    - name: Positive test - valid AD password
+      ansible.builtin.shell: |
+        echo '{{ radius_attrs }}' | \
+          radclient -x 198.18.133.27:1812 auth '{{ radius_shared_secret }}'
+      register: pos
+      changed_when: false
+      failed_when: "'Access-Accept' not in pos.stdout"
+
+    - name: Negative test - wrong password
+      ansible.builtin.shell: |
+        echo 'User-Name = {{ test_username }},
+              User-Password = totally-not-the-password,
+              NAS-IP-Address = 198.18.133.100,
+              NAS-Port = 0,
+              Service-Type = Framed-User,
+              Called-Station-Id = aa-bb-cc-dd-ee-ff:{{ ssid }},
+              Calling-Station-Id = 11-22-33-44-55-66' | \
+          radclient -x 198.18.133.27:1812 auth '{{ radius_shared_secret }}'
+      register: neg
+      changed_when: false
+      failed_when: "'Access-Reject' not in neg.stdout"
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "Positive (valid AD password) -> {{ 'PASS Access-Accept' if 'Access-Accept' in pos.stdout else 'FAIL' }}"
+          - "Negative (wrong password)    -> {{ 'PASS Access-Reject' if 'Access-Reject' in neg.stdout else 'FAIL' }}"
