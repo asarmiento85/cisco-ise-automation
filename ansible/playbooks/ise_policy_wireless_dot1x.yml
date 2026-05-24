@@ -1,0 +1,236 @@
+---
+# Build a wireless dot1x Policy Set that:
+#   1. Matches when traffic arrives from our WLC (Device Type#WLC)
+#      AND the SSID == dCloud-Corp (RADIUS:Called-Station-ID ends with the SSID)
+#   2. Authenticates against AD via the 'dcloud' join point
+#   3. Authorizes:
+#        - Domain Computers -> PermitAccess
+#        - Domain Users     -> PermitAccess
+#        - default          -> DenyAccess (auto-created)
+
+- name: ISE - wireless dot1x policy set
+  hosts: ise
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    api_base: "https://{{ ise_hostname }}/api/v1/policy/network-access"
+    policy_set_name: "Wireless-Dot1x-dCloud"
+    ssid: "dCloud-Corp"
+    ad_join_point: "{{ ad_netbios }}"           # "dcloud"
+    authz_profile_permit: "PermitAccess"        # ISE built-in
+  tasks:
+
+    # ---------------------------------------------------------
+    # 1. Ensure policy set exists
+    # ---------------------------------------------------------
+    - name: List existing policy sets
+      ansible.builtin.uri:
+        url: "{{ api_base }}/policy-set"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: policy_sets
+
+    - name: Find existing policy set by name
+      ansible.builtin.set_fact:
+        existing_ps: >-
+          {{
+            (policy_sets.json.response | default([]))
+            | selectattr('name', 'equalto', policy_set_name)
+            | list | first | default(none)
+          }}
+
+    - name: Create policy set
+      ansible.builtin.uri:
+        url: "{{ api_base }}/policy-set"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ policy_set_name }}"
+          description: "Wireless 802.1X via ISE - managed by Ansible"
+          isProxy: false
+          serviceName: "Default Network Access"
+          state: "enabled"
+          condition:
+            conditionType: "ConditionAndBlock"
+            isNegate: false
+            children:
+              - conditionType: "ConditionAttributes"
+                isNegate: false
+                dictionaryName: "DEVICE"
+                attributeName: "Device Type"
+                operator: "equals"
+                attributeValue: "All Device Types#WLC"
+              - conditionType: "ConditionAttributes"
+                isNegate: false
+                dictionaryName: "Radius"
+                attributeName: "Called-Station-ID"
+                operator: "endsWith"
+                attributeValue: "{{ ssid }}"
+        status_code: [200, 201]
+      register: created_ps
+      when: existing_ps is none
+
+    - name: Resolve policy set id
+      ansible.builtin.set_fact:
+        ps_id: >-
+          {{
+            (created_ps.json.response.id
+              if (existing_ps is none and created_ps.json is defined)
+              else existing_ps.id)
+          }}
+
+    - name: Show policy set id
+      ansible.builtin.debug:
+        msg: "Policy set '{{ policy_set_name }}' = {{ ps_id }}"
+
+    # ---------------------------------------------------------
+    # 2. UPDATE the default authN rule to point at AD
+    # ---------------------------------------------------------
+    - name: List authN rules
+      ansible.builtin.uri:
+        url: "{{ api_base }}/policy-set/{{ ps_id }}/authentication"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: authn_rules
+
+    - name: Find the default authN rule
+      ansible.builtin.set_fact:
+        default_authn: >-
+          {{
+            (authn_rules.json.response | default([]))
+            | selectattr('rule.default', 'equalto', true)
+            | list | first | default(none)
+          }}
+
+    - name: Update default authN rule -> AD identity source
+      ansible.builtin.uri:
+        url: "{{ api_base }}/policy-set/{{ ps_id }}/authentication/{{ default_authn.rule.id }}"
+        method: PUT
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          rule:
+            id: "{{ default_authn.rule.id }}"
+            name: "{{ default_authn.rule.name }}"
+            default: true
+            state: "enabled"
+          identitySourceName: "{{ ad_join_point }}"
+          ifAuthFail: "REJECT"
+          ifUserNotFound: "REJECT"
+          ifProcessFail: "DROP"
+        status_code: [200, 201, 204]
+      when: default_authn is not none
+
+    # ---------------------------------------------------------
+    # 3. Add authZ rules for Domain Users + Domain Computers
+    # ---------------------------------------------------------
+    - name: List existing authZ rules
+      ansible.builtin.uri:
+        url: "{{ api_base }}/policy-set/{{ ps_id }}/authorization"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: authz_rules
+
+    - name: Set existing authZ names fact
+      ansible.builtin.set_fact:
+        existing_authz_names: >-
+          {{ authz_rules.json.response | default([]) | map(attribute='rule.name') | list }}
+
+    - name: Add 'Domain Users -> Permit'
+      ansible.builtin.uri:
+        url: "{{ api_base }}/policy-set/{{ ps_id }}/authorization"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          rule:
+            name: "AD Domain Users - Permit"
+            default: false
+            state: "enabled"
+            condition:
+              conditionType: "ConditionAttributes"
+              isNegate: false
+              dictionaryName: "{{ ad_join_point }}"
+              attributeName: "ExternalGroups"
+              operator: "equals"
+              attributeValue: "{{ ad_domain }}/Users/Domain Users"
+          profile:
+            - "{{ authz_profile_permit }}"
+        status_code: [200, 201]
+      when: "'AD Domain Users - Permit' not in existing_authz_names"
+
+    - name: Add 'Domain Computers -> Permit'
+      ansible.builtin.uri:
+        url: "{{ api_base }}/policy-set/{{ ps_id }}/authorization"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          rule:
+            name: "AD Domain Computers - Permit"
+            default: false
+            state: "enabled"
+            condition:
+              conditionType: "ConditionAttributes"
+              isNegate: false
+              dictionaryName: "{{ ad_join_point }}"
+              attributeName: "ExternalGroups"
+              operator: "equals"
+              attributeValue: "{{ ad_domain }}/Users/Domain Computers"
+          profile:
+            - "{{ authz_profile_permit }}"
+        status_code: [200, 201]
+      when: "'AD Domain Computers - Permit' not in existing_authz_names"
+
+    - name: Show final state
+      ansible.builtin.uri:
+        url: "{{ api_base }}/policy-set/{{ ps_id }}/authorization"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: final_authz
+
+    - name: Display authZ rules
+      ansible.builtin.debug:
+        msg: "{{ final_authz.json.response | map(attribute='rule.name') | list }}"
