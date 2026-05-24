@@ -13,10 +13,22 @@
     tacacs_source_interface: Vlan11
   tasks:
 
+    # NOTE: on C9800-CL 17.09 the 'address ipv4' line is silently dropped if
+    # there are stale conflicting tacacs servers (e.g. TACACS_SERVER_AUTH_1
+    # left over from dCloud bootstrap). Clean them up first so the address sticks.
+    - name: Remove stale auto-generated TACACS servers
+      cisco.ios.ios_config:
+        lines:
+          - "no tacacs server TACACS_SERVER_AUTH_1"
+          - "no tacacs server TACACS_SERVER_ACCT_1"
+          - "no tacacs server TACACS_SERVER_ATHR_1"
+      ignore_errors: true
+
     - name: Configure TACACS+ server entry
       cisco.ios.ios_config:
         lines:
           - "address ipv4 {{ ise_hostname }}"
+          - "port 49"
           - "key {{ radius_shared_secret }}"
           - "single-connection"
         parents: "tacacs server {{ tacacs_server_name }}"

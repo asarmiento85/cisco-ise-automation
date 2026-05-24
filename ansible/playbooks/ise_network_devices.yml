@@ -29,6 +29,9 @@
       loop: "{{ nad_targets }}"
       register: existing_nads
 
+    # NOTE: ISE 3.4 ERS silently drops leaf NetworkDeviceGroupList entries on POST
+    # (e.g. only 'Device Type#All Device Types' is saved, not '#WLC'). A follow-up PUT
+    # sets them correctly. We do POST -> PUT every time as the simplest fix.
     - name: Create missing NADs via ERS
       ansible.builtin.uri:
         url: "{{ ers_base }}/networkdevice"
@@ -66,3 +69,39 @@
       when: item.status == 404
       loop_control:
         label: "{{ item.item }}"
+
+    - name: Re-PUT groups to bind leaf NDGs (ISE 3.4 POST drops them)
+      ansible.builtin.uri:
+        url: "{{ ers_base }}/networkdevice/name/{{ item }}"
+        method: PUT
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Accept: application/json
+          Content-Type: application/json
+        body_format: json
+        body:
+          NetworkDevice:
+            name: "{{ item }}"
+            profileName: Cisco
+            coaPort: 1700
+            authenticationSettings:
+              networkProtocol: RADIUS
+              radiusSharedSecret: "{{ radius_shared_secret }}"
+              enableKeyWrap: false
+            NetworkDeviceIPList:
+              - ipaddress: "{{ hostvars[item].ansible_host }}"
+                mask: 32
+            NetworkDeviceGroupList:
+              - "Location#All Locations#Lab"
+              - >-
+                Device Type#All Device Types#{{
+                  'WLC' if item in (groups['wlc'] | default([])) else 'Switch'
+                }}
+              - "IPSEC#Is IPSEC Device#No"
+        status_code: [200, 204]
+      loop: "{{ nad_targets }}"
+      loop_control:
+        label: "{{ item }}"
