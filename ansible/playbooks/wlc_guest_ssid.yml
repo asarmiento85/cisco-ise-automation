@@ -1,0 +1,101 @@
+---
+# Open MAC-filtered guest SSID 'dCloud-Guest' with CWA redirect to ISE.
+#
+# PREREQ / KNOWN ISSUE: this playbook requires admin priv on the WLC. After
+# our TACACS+ setup, the local 'dcloud' user can hang during login because
+# the AAA chain tries TACACS first and waits. Two recoveries:
+#   (a) console into the WLC and run:
+#         aaa authentication login default local group ISE-TACACS-GRP
+#       (puts local FIRST so dcloud always works as fallback)
+#   (b) temporarily disable Device Admin Service on the ISE node, run this
+#       playbook with dcloud creds, re-enable Device Admin Service.
+#
+# Flow on the WLC:
+#   - SSID dCloud-Guest, security mac-filtering (RADIUS), no L2 encryption
+#   - Policy profile lab-guest-policy: VLAN default, AAA-override, accounting
+#   - Pre-auth/redirect ACL GUEST_REDIRECT:
+#       permit DNS, DHCP, traffic to ISE (so the captive portal loads)
+#       deny everything else (gets redirected by the WLC to the portal URL ISE sent)
+
+- name: WLC - Guest SSID with CWA redirect
+  hosts: wlc
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    ssid_name: dCloud-Guest
+    wlan_profile: lab-guest-wlan
+    wlan_id: 18
+    policy_profile: lab-guest-policy
+    policy_tag: lab-tag         # reuse existing tag
+    method_list_authn: ISE-DOT1X     # for MAC filtering, AAA list
+    method_list_authz: ISE-NETWORK
+    method_list_acct: ISE-ACCT
+    redirect_acl: GUEST_REDIRECT
+    ise_host: "{{ ise_hostname }}"
+  tasks:
+
+    # Redirect ACL: permit infra (DNS/DHCP/ISE), deny everything else.
+    # When ISE returns a CWA redirect, the WLC will redirect anything DENIED
+    # by this ACL to the portal. So we DENY-to-redirect, PERMIT-to-not-redirect.
+    - name: Configure GUEST_REDIRECT ACL
+      cisco.ios.ios_config:
+        lines:
+          # Allow DNS so the browser can resolve names
+          - "10 permit udp any any eq domain"
+          - "20 permit udp any any eq bootps"
+          - "30 permit udp any any eq bootpc"
+          # Allow traffic to/from ISE for the portal
+          - "40 permit tcp any host {{ ise_host }} eq 443"
+          - "50 permit tcp any host {{ ise_host }} eq 8443"
+          - "60 permit tcp host {{ ise_host }} any eq 443"
+          - "70 permit tcp host {{ ise_host }} any eq 8443"
+          # Everything else gets redirected
+          - "100 deny ip any any"
+        parents: "ip access-list extended {{ redirect_acl }}"
+
+    - name: Configure Guest Policy Profile (open + aaa-override)
+      cisco.ios.ios_config:
+        lines:
+          - "description ansible-guest"
+          - "vlan default"
+          - "aaa-override"
+          - "accounting-list {{ method_list_acct }}"
+          - "ipv4 dhcp required"
+          - "no shutdown"
+        parents: "wireless profile policy {{ policy_profile }}"
+
+    - name: Configure Guest WLAN Profile (open + MAC filtering)
+      cisco.ios.ios_config:
+        lines:
+          - "no shutdown"
+          - "no security wpa"
+          - "no security wpa wpa2"
+          - "no security wpa akm dot1x"
+          - "mac-filtering {{ method_list_authn }}"
+        parents: "wlan {{ wlan_profile }} {{ wlan_id }} {{ ssid_name }}"
+
+    - name: Bind guest WLAN to policy profile in existing policy tag
+      cisco.ios.ios_config:
+        lines:
+          - "wlan {{ wlan_profile }} policy {{ policy_profile }}"
+        parents: "wireless tag policy {{ policy_tag }}"
+
+    - name: Save
+      cisco.ios.ios_command:
+        commands:
+          - command: "write memory"
+            prompt: "\\[confirm\\]"
+            answer: "y"
+      changed_when: true
+
+    - name: Verify
+      cisco.ios.ios_command:
+        commands:
+          - "show wlan summary"
+          - "show ip access-list {{ redirect_acl }}"
+      register: state
+
+    - name: Display
+      ansible.builtin.debug:
+        var: state.stdout_lines

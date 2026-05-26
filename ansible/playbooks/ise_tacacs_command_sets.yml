@@ -1,0 +1,146 @@
+---
+# Granular TACACS+ command sets for tiered network device admin access.
+#
+# Replaces the broad 'PermitAllCommands' wildcard with three intent-based sets:
+#
+#   ReadOnlyCommands   -> only 'show', 'ping', 'traceroute' (helpdesk)
+#   NetworkOpsCommands -> read-only + safe ops commands (clear, copy, debug)
+#                         (NOC engineer who can pull/troubleshoot but not reconfigure)
+#   PermitAllCommands  -> existing, kept for full-admin profiles
+#
+# Then wires:
+#   Helpdesk profile (priv 1)  -> ReadOnlyCommands
+#   We leave room for a NetworkOps profile if you want to add a Domain group later.
+
+- name: ISE - granular TACACS+ command sets
+  hosts: ise
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    ers: "https://{{ ise_hostname }}/ers/config"
+    da_api: "https://{{ ise_hostname }}/api/v1/policy/device-admin"
+    da_policy_set_name: "WLC-TACACS-Admin"
+    command_sets:
+      - name: ReadOnlyCommands
+        description: "show/ping/traceroute only (helpdesk)"
+        permit_unmatched: false
+        commands:
+          - { grant: PERMIT, command: show,       arguments: ".*" }
+          - { grant: PERMIT, command: ping,       arguments: ".*" }
+          - { grant: PERMIT, command: traceroute, arguments: ".*" }
+          - { grant: PERMIT, command: exit,       arguments: ".*" }
+          - { grant: PERMIT, command: enable,     arguments: ".*" }
+          - { grant: PERMIT, command: terminal,   arguments: ".*" }
+      - name: NetworkOpsCommands
+        description: "Read-only + safe ops (clear, copy, debug, reload-confirm)"
+        permit_unmatched: false
+        commands:
+          - { grant: PERMIT, command: show,       arguments: ".*" }
+          - { grant: PERMIT, command: ping,       arguments: ".*" }
+          - { grant: PERMIT, command: traceroute, arguments: ".*" }
+          - { grant: PERMIT, command: clear,      arguments: ".*" }
+          - { grant: PERMIT, command: copy,       arguments: "running-config .*|startup-config .*" }
+          - { grant: PERMIT, command: debug,      arguments: ".*" }
+          - { grant: PERMIT, command: undebug,    arguments: ".*" }
+          - { grant: PERMIT, command: no,         arguments: "debug .*" }
+          - { grant: PERMIT, command: terminal,   arguments: ".*" }
+          - { grant: PERMIT, command: exit,       arguments: ".*" }
+          - { grant: PERMIT, command: enable,     arguments: ".*" }
+          - { grant: DENY,   command: configure,  arguments: ".*" }
+          - { grant: DENY,   command: reload,     arguments: ".*" }
+          - { grant: DENY,   command: write,      arguments: ".*" }
+  tasks:
+
+    - name: Check command set exists
+      ansible.builtin.uri:
+        url: "{{ ers }}/tacacscommandsets/name/{{ item.name }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      loop: "{{ command_sets }}"
+      register: cs_check
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create command set
+      ansible.builtin.uri:
+        url: "{{ ers }}/tacacscommandsets"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          TacacsCommandSets:
+            name: "{{ item.item.name }}"
+            description: "{{ item.item.description }}"
+            permitUnmatched: "{{ item.item.permit_unmatched }}"
+            commands:
+              commandList: "{{ item.item.commands }}"
+        status_code: [201]
+      loop: "{{ cs_check.results }}"
+      when: item.status == 404
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    # --- Rewire Helpdesk authZ to use ReadOnlyCommands ---
+    - name: Get Device Admin policy set id
+      ansible.builtin.uri:
+        url: "{{ da_api }}/policy-set"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: da_psets
+
+    - name: Set da_ps_id
+      ansible.builtin.set_fact:
+        da_ps_id: >-
+          {{ (da_psets.json.response | selectattr('name','equalto', da_policy_set_name)
+               | list | first).id }}
+
+    - name: List authZ rules
+      ansible.builtin.uri:
+        url: "{{ da_api }}/policy-set/{{ da_ps_id }}/authorization"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: az_rules
+
+    - name: Update Helpdesk rule -> ReadOnlyCommands
+      ansible.builtin.uri:
+        url: "{{ da_api }}/policy-set/{{ da_ps_id }}/authorization/{{ item.rule.id }}"
+        method: PUT
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          rule:
+            id: "{{ item.rule.id }}"
+            name: "{{ item.rule.name }}"
+            default: false
+            state: enabled
+            rank: "{{ item.rule.rank }}"
+            condition: "{{ item.rule.condition }}"
+          profile: "WLC_Helpdesk_Priv1"
+          commands:
+            - "ReadOnlyCommands"
+        status_code: [200, 204]
+      loop: "{{ az_rules.json.response }}"
+      when: item.rule.name == 'AD Domain Users - Readonly'
+      loop_control:
+        label: "{{ item.rule.name }}"

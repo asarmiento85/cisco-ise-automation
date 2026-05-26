@@ -1,0 +1,362 @@
+---
+# Central Web Auth (CWA) for guest wireless on the dCloud-Guest SSID.
+#
+# Flow:
+#   1. Endpoint hits 'dCloud-Guest' (open MAC-filtered SSID on the WLC)
+#   2. WLC MABs the MAC -> ISE returns 'Guest-Redirect' authZ profile
+#      (redirect-URL=Self-Registered Guest Portal, redirect ACL=GUEST_REDIRECT)
+#   3. WLC redirects HTTP/HTTPS to ISE portal
+#   4. Guest self-registers (or uses sponsor-created creds) and logs in
+#   5. ISE sends CoA -> WLC re-MABs the same MAC -> ISE now sees the user
+#      session and returns 'Guest-Permit' authZ profile (VLAN 50 + permit dACL)
+#
+# We build:
+#   - Endpoint Identity Group 'Lab_Guests' for tracking registered guest devices
+#   - dACL 'GUEST_PERMIT_INTERNET' (permit out, deny internal)
+#   - AuthZ profile 'Guest-Redirect' (redirect to portal)
+#   - AuthZ profile 'Guest-Permit' (VLAN 50 + GUEST_PERMIT_INTERNET dACL)
+#   - Policy set 'Guest-CWA' matching: Device Type=WLC AND Called-Station-ID
+#     endsWith 'dCloud-Guest', with AuthN=Guest Portal Sequence and the two
+#     AuthZ rules above
+
+- name: ISE - Guest Web Auth (CWA)
+  hosts: ise
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    ers: "https://{{ ise_hostname }}/ers/config"
+    api: "https://{{ ise_hostname }}/api/v1/policy/network-access"
+    guest_endpoint_group: Lab_Guests
+    guest_dacl: GUEST_PERMIT_INTERNET
+    guest_dacl_lines: |
+      deny ip any 10.0.0.0 0.255.255.255
+      deny ip any 172.16.0.0 0.15.255.255
+      deny ip any 192.168.0.0 0.0.255.255
+      permit ip any any
+    redirect_profile: Guest-Redirect
+    permit_profile: Guest-Permit
+    permit_vlan: "50"
+    redirect_acl_name: GUEST_REDIRECT       # this is the redirect ACL name on the WLC
+    guest_portal_name: "Self-Registered Guest Portal (default)"
+    guest_id_sequence: "Guest_Portal_Sequence"
+    guest_ssid: dCloud-Guest
+    policy_set_name: "Guest-CWA"
+  tasks:
+
+    # ---------- Endpoint group ----------
+    - name: Check guest endpoint group
+      ansible.builtin.uri:
+        url: "{{ ers }}/endpointgroup/name/{{ guest_endpoint_group }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: gg_check
+
+    - name: Create guest endpoint group
+      ansible.builtin.uri:
+        url: "{{ ers }}/endpointgroup"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          EndPointGroup:
+            name: "{{ guest_endpoint_group }}"
+            description: "Registered guests"
+            systemDefined: false
+        status_code: [201]
+      when: gg_check.status == 404
+
+    # ---------- Guest dACL ----------
+    - name: Check guest dACL
+      ansible.builtin.uri:
+        url: "{{ ers }}/downloadableacl/name/{{ guest_dacl }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: gdacl_check
+
+    - name: Create guest dACL (Internet only, no internal)
+      ansible.builtin.uri:
+        url: "{{ ers }}/downloadableacl"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          DownloadableAcl:
+            name: "{{ guest_dacl }}"
+            description: "Guest -> Internet only"
+            dacl: "{{ guest_dacl_lines }}"
+            daclType: "IPV4"
+        status_code: [201]
+      when: gdacl_check.status == 404
+
+    # ---------- AuthZ profile: Guest-Redirect (sends client to portal) ----------
+    - name: Check redirect profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile/name/{{ redirect_profile }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: rp_check
+
+    - name: Create Guest-Redirect authZ profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          AuthorizationProfile:
+            name: "{{ redirect_profile }}"
+            description: "Redirect new guests to the self-registered portal"
+            accessType: "ACCESS_ACCEPT"
+            authzProfileType: "SWITCH"
+            webRedirection:
+              WebRedirectionType: "CentralizedWebAuth"
+              acl: "{{ redirect_acl_name }}"
+              portalName: "{{ guest_portal_name }}"
+              displayCertificatesRenewalMessages: false
+            trackMovement: false
+        status_code: [201]
+      when: rp_check.status == 404
+
+    # ---------- AuthZ profile: Guest-Permit (post-login full access) ----------
+    - name: Check permit profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile/name/{{ permit_profile }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: pp_check
+
+    - name: Create Guest-Permit authZ profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          AuthorizationProfile:
+            name: "{{ permit_profile }}"
+            description: "Guest post-auth: VLAN {{ permit_vlan }} + Internet-only dACL"
+            accessType: "ACCESS_ACCEPT"
+            authzProfileType: "SWITCH"
+            vlan: { nameID: "{{ permit_vlan }}", tagID: 1 }
+            daclName: "{{ guest_dacl }}"
+            trackMovement: false
+        status_code: [201]
+      when: pp_check.status == 404
+
+    # ---------- Guest CWA policy set ----------
+    - name: List policy sets
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: psets
+
+    - name: Find existing guest policy set
+      ansible.builtin.set_fact:
+        existing_gps: >-
+          {{
+            (psets.json.response | default([]))
+            | selectattr('name', 'equalto', policy_set_name)
+            | list | first | default(none)
+          }}
+
+    - name: Create Guest CWA policy set
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          name: "{{ policy_set_name }}"
+          description: "Central Web Auth for guests"
+          isProxy: false
+          serviceName: "Default Network Access"
+          state: enabled
+          condition:
+            conditionType: ConditionAndBlock
+            isNegate: false
+            children:
+              - conditionType: ConditionAttributes
+                isNegate: false
+                dictionaryName: DEVICE
+                attributeName: "Device Type"
+                operator: equals
+                attributeValue: "All Device Types#WLC"
+              - conditionType: ConditionAttributes
+                isNegate: false
+                dictionaryName: Radius
+                attributeName: Called-Station-ID
+                operator: endsWith
+                attributeValue: "{{ guest_ssid }}"
+        status_code: [200, 201]
+      register: created_gps
+      when: existing_gps is none
+
+    - name: Resolve guest_ps_id
+      ansible.builtin.set_fact:
+        guest_ps_id: >-
+          {{
+            (created_gps.json.response.id
+              if (existing_gps is none and created_gps.json is defined)
+              else existing_gps.id)
+          }}
+
+    # ---------- AuthN: Guest portal identity sequence ----------
+    - name: List guest authN rules
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ guest_ps_id }}/authentication"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: g_authn
+
+    - name: Update default authN -> Internal Endpoints (CONTINUE on not-found)
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ guest_ps_id }}/authentication/{{ item.rule.id }}"
+        method: PUT
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          rule:
+            id: "{{ item.rule.id }}"
+            name: "{{ item.rule.name }}"
+            default: true
+            state: enabled
+          identitySourceName: "Internal Endpoints"
+          ifAuthFail: REJECT
+          ifUserNotFound: CONTINUE
+          ifProcessFail: DROP
+        status_code: [200, 204]
+      loop: "{{ g_authn.json.response }}"
+      when: item.rule.default | default(false)
+      loop_control:
+        label: "{{ item.rule.name }}"
+
+    # ---------- AuthZ rules ----------
+    - name: List guest authZ rules
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ guest_ps_id }}/authorization"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: g_authz
+
+    - name: Set existing names
+      ansible.builtin.set_fact:
+        gz_names: "{{ g_authz.json.response | map(attribute='rule.name') | list }}"
+
+    # First rule: registered guests (already in Lab_Guests group) -> Permit
+    - name: 'Registered Guest -> {{ permit_profile }}'
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ guest_ps_id }}/authorization"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          rule:
+            name: "Registered Guest - Permit"
+            default: false
+            state: enabled
+            rank: 0
+            condition:
+              conditionType: ConditionAttributes
+              isNegate: false
+              dictionaryName: IdentityGroup
+              attributeName: Name
+              operator: equals
+              attributeValue: "Endpoint Identity Groups:{{ guest_endpoint_group }}"
+          profile:
+            - "{{ permit_profile }}"
+        status_code: [200, 201]
+      when: "'Registered Guest - Permit' not in gz_names"
+
+    # Catch-all: redirect any traffic NOT already in Lab_Guests to the portal.
+    # Condition matches every RADIUS request -> effectively a fallthrough.
+    - name: 'Catch-all -> {{ redirect_profile }}'
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ guest_ps_id }}/authorization"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          rule:
+            name: "New Guest - Redirect to Portal"
+            default: false
+            state: enabled
+            rank: 1
+            condition:
+              conditionType: ConditionAttributes
+              isNegate: false
+              dictionaryName: Radius
+              attributeName: NAS-Port-Type
+              operator: equals
+              attributeValue: "Wireless - IEEE 802.11"
+          profile:
+            - "{{ redirect_profile }}"
+        status_code: [200, 201]
+      when: "'New Guest - Redirect to Portal' not in gz_names"
+
+    - name: Final state
+      ansible.builtin.debug:
+        msg:
+          - "Guest CWA policy set: {{ policy_set_name }} ({{ guest_ps_id }})"
+          - "Redirect profile uses ACL name '{{ redirect_acl_name }}' - this must exist on the WLC"

@@ -1,0 +1,219 @@
+---
+# TrustSec scaffolding: Security Group Tags (SGTs) + SGACLs + Egress matrix.
+#
+# Builds an intent-based segmentation model that maps to the policy sets we
+# already have:
+#
+#   SGT 100  Employees         <- AD Domain Users
+#   SGT 110  Contractors       <- (future AD group, e.g. 'Contractors')
+#   SGT 200  IoT_Printers      <- Lab_IoT_Printers endpoint group
+#   SGT 210  IoT_Cameras       <- Lab_IoT_Cameras endpoint group
+#   SGT 300  Guests            <- Lab_Guests endpoint group
+#   SGT 999  Quarantine        <- posture-noncompliant (used by #5 posture)
+#
+# SGACLs (intent):
+#   Permit_All          - placeholder for allow rules
+#   Deny_All            - placeholder for deny (used for Quarantine, cross-zone)
+#   IoT_Permit_Mgmt     - permit only management protocols (snmp, http, https)
+#
+# Egress matrix highlights:
+#   Employees   -> Employees     : Permit_All
+#   Employees   -> IoT_Printers  : Permit_All
+#   Contractors -> Employees     : Deny_All
+#   IoT_*       -> IoT_*         : IoT_Permit_Mgmt
+#   Guests      -> *             : Deny_All (Internet-only handled by dACL elsewhere)
+#   Quarantine  -> *             : Deny_All
+#
+# After ISE has these, the authZ profiles we already built can be extended
+# with `sgt: <name>` to push the tag down to the NAD per session.
+
+- name: ISE - TrustSec SGTs, SGACLs, and Egress matrix
+  hosts: ise
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    ers: "https://{{ ise_hostname }}/ers/config"
+    sgts:
+      - { name: "Employees",    value: 100, description: "Corporate employees (AD Domain Users)" }
+      - { name: "Contractors",  value: 110, description: "Contractor / third-party" }
+      - { name: "IoT_Printers", value: 200, description: "Lab IoT printers" }
+      - { name: "IoT_Cameras",  value: 210, description: "Lab IoT cameras" }
+      - { name: "Guests",       value: 300, description: "Registered guests (CWA)" }
+      - { name: "Quarantine",   value: 999, description: "Posture non-compliant / restricted" }
+    sgacls:
+      - name: "Permit_All"
+        description: "Allow all traffic"
+        ip_version: "IPV4"
+        acl_content: |
+          permit ip
+      - name: "Deny_All"
+        description: "Block all traffic"
+        ip_version: "IPV4"
+        acl_content: |
+          deny ip log
+      - name: "IoT_Permit_Mgmt"
+        description: "Permit only management ports between IoT devices"
+        ip_version: "IPV4"
+        acl_content: |
+          permit tcp dst eq 22
+          permit tcp dst eq 80
+          permit tcp dst eq 443
+          permit udp dst eq 161
+          deny ip
+  tasks:
+
+    # ---------- SGTs ----------
+    - name: Check SGT exists
+      ansible.builtin.uri:
+        url: "{{ ers }}/sgt/?filter=name.EQ.{{ item.name }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      loop: "{{ sgts }}"
+      register: sgt_check
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create SGT
+      ansible.builtin.uri:
+        url: "{{ ers }}/sgt"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          Sgt:
+            name: "{{ item.item.name }}"
+            description: "{{ item.item.description }}"
+            value: "{{ item.item.value }}"
+            propogateToApic: false
+        status_code: [201]
+      loop: "{{ sgt_check.results }}"
+      when: (item.json.SearchResult.total | int) == 0
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    # ---------- SGACLs ----------
+    - name: Check SGACL exists
+      ansible.builtin.uri:
+        url: "{{ ers }}/sgacl/?filter=name.EQ.{{ item.name }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      loop: "{{ sgacls }}"
+      register: sgacl_check
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create SGACL
+      ansible.builtin.uri:
+        url: "{{ ers }}/sgacl"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          Sgacl:
+            name: "{{ item.item.name }}"
+            description: "{{ item.item.description }}"
+            ipVersion: "{{ item.item.ip_version }}"
+            aclcontent: "{{ item.item.acl_content }}"
+        status_code: [201]
+      loop: "{{ sgacl_check.results }}"
+      when: (item.json.SearchResult.total | int) == 0
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    # ---------- Resolve IDs for egress matrix ----------
+    - name: List all SGTs
+      ansible.builtin.uri:
+        url: "{{ ers }}/sgt?size=100"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: all_sgts
+
+    - name: List all SGACLs
+      ansible.builtin.uri:
+        url: "{{ ers }}/sgacl?size=100"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: all_sgacls
+
+    - name: Build SGT name->id map
+      ansible.builtin.set_fact:
+        sgt_map: >-
+          {{ dict(all_sgts.json.SearchResult.resources
+                  | map(attribute='name') | zip(all_sgts.json.SearchResult.resources
+                  | map(attribute='id'))) }}
+
+    - name: Build SGACL name->id map
+      ansible.builtin.set_fact:
+        sgacl_map: >-
+          {{ dict(all_sgacls.json.SearchResult.resources
+                  | map(attribute='name') | zip(all_sgacls.json.SearchResult.resources
+                  | map(attribute='id'))) }}
+
+    # ---------- Egress matrix entries ----------
+    # NOTE: the egress matrix endpoint is /ers/config/egressmatrixcell
+    - name: Define egress matrix entries
+      ansible.builtin.set_fact:
+        egress_cells:
+          - { src: "Employees",    dst: "Employees",    sgacls: ["Permit_All"],      final: "PERMIT_IP" }
+          - { src: "Employees",    dst: "IoT_Printers", sgacls: ["Permit_All"],      final: "PERMIT_IP" }
+          - { src: "Contractors",  dst: "Employees",    sgacls: ["Deny_All"],        final: "DENY_IP"   }
+          - { src: "IoT_Printers", dst: "IoT_Printers", sgacls: ["IoT_Permit_Mgmt"], final: "DENY_IP"   }
+          - { src: "IoT_Cameras",  dst: "IoT_Cameras",  sgacls: ["IoT_Permit_Mgmt"], final: "DENY_IP"   }
+          - { src: "Guests",       dst: "Employees",    sgacls: ["Deny_All"],        final: "DENY_IP"   }
+          - { src: "Quarantine",   dst: "Employees",    sgacls: ["Deny_All"],        final: "DENY_IP"   }
+
+    - name: Create egress matrix cells
+      ansible.builtin.uri:
+        url: "{{ ers }}/egressmatrixcell"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          EgressMatrixCell:
+            description: "{{ item.src }} -> {{ item.dst }}"
+            sourceSgtId: "{{ sgt_map[item.src] }}"
+            destinationSgtId: "{{ sgt_map[item.dst] }}"
+            matrixCellStatus: "ENABLED"
+            defaultRule: "{{ item.final }}"
+            sgacls: "{{ item.sgacls | map('extract', sgacl_map) | list }}"
+        status_code: [201, 400, 409]   # 400/409 = already exists
+      loop: "{{ egress_cells }}"
+      loop_control:
+        label: "{{ item.src }} -> {{ item.dst }}"
+      register: matrix
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "SGTs: {{ sgt_map.keys() | list }}"
+          - "SGACLs: {{ sgacl_map.keys() | list }}"
+          - "Matrix cells attempted: {{ egress_cells | length }}"

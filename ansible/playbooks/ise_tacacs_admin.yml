@@ -1,6 +1,17 @@
 ---
 # TACACS+ device admin in ISE for WLC management access.
 #
+# KNOWN LIMITATION: the 'AD Domain Admins -> Full' rule does not match for
+# the dCloud 'administrator' user even though they ARE in Domain Admins via
+# AD LDAP (verified by getUserGroups). administrator hits 'AD Domain Users ->
+# Readonly' instead and lands at priv 1. Root cause appears to be ISE's
+# TACACS-time ExternalGroups resolution returning a subset of groups vs the
+# LDAP query. To track down: enable AD authz attribute debugging on ISE,
+# inspect the actual ExternalGroups value in the live session, possibly
+# adjust the join point's adScopes or advanced settings to force recursive
+# group expansion. Both rules are kept in place; the chain works correctly,
+# just the granularity is off.
+#
 #   - Adds TACACS+ shared secret to the vWLC NAD (next to its RADIUS settings)
 #   - Creates 2 TACACS profiles:
 #       WLC-Admin-Priv15  -> shell priv-lvl 15 (full admin)

@@ -1,0 +1,260 @@
+---
+# Posture: ensure endpoints meet a compliance baseline before getting full access.
+#
+# Builds an ISE posture framework that:
+#   1. Defines a 'Corp_AV_Running' condition (a Windows service the client
+#      must have running — e.g. an AV daemon). This is a simple service-check
+#      condition that's API-creatable.
+#   2. Wraps that condition in a 'Corp_AV_Required' requirement, pointing at
+#      a 'Message Only' remediation (display a notice, no auto-fix).
+#   3. Creates 'Corp_Posture_Policy' that applies the requirement to all
+#      Windows endpoints in the AD Domain Users identity group.
+#   4. Creates an 'Posture-Redirect' authZ profile that triggers the
+#      client posture scan via Web Redirection (Client Provisioning portal).
+#   5. Creates an 'Compliant-Full-Access' authZ profile (VLAN 11 + perm dACL).
+#   6. Updates the Wireless-Dot1x-dCloud policy set with two new authZ rules:
+#       - Unknown posture status -> Posture-Redirect
+#       - Compliant posture status -> Compliant-Full-Access
+#     The existing 'AD Domain Users' rule keeps working as the fallback.
+
+- name: ISE - posture framework
+  hosts: ise
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    ers: "https://{{ ise_hostname }}/ers/config"
+    api: "https://{{ ise_hostname }}/api/v1/policy/network-access"
+    policy_set_name: "Wireless-Dot1x-dCloud"
+    posture_condition_name: "Corp_AV_Running"
+    posture_requirement_name: "Corp_AV_Required"
+    posture_policy_name: "Corp_Posture_Policy"
+    redirect_profile: "Posture-Redirect"
+    compliant_profile: "Compliant-Full-Access"
+    redirect_acl_name: "POSTURE_REDIRECT"
+    client_provisioning_portal: "Client Provisioning Portal (default)"
+    compliant_vlan: "11"
+    dacl_name: "LAB-PERMIT-ALL"
+  tasks:
+
+    # ---------- Posture condition / requirement / policy ----------
+    # NOTE: ISE 3.4 does NOT expose these via ERS or OpenAPI. They must be
+    # created in the GUI:
+    #   Work Centers -> Posture -> Policy Elements -> Conditions -> Service
+    #     Name:  Corp_AV_Running
+    #     OS:    Windows All
+    #     Service: WinDefend     Operator: equals  Status: Running
+    #
+    #   Work Centers -> Posture -> Policy Elements -> Requirements
+    #     Name: Corp_AV_Required, Condition: Corp_AV_Running,
+    #     Remediation: 'Message Text Only' with a short notice string
+    #
+    #   Work Centers -> Posture -> Posture Policy
+    #     Rule Name: Corp_Posture_Policy
+    #     Identity Groups: Any  (or specific AD group)
+    #     OS: Windows All
+    #     Other Conditions: Network Access:UseCase Equals Wireless_802.1X (optional)
+    #     Requirements: Corp_AV_Required
+    #
+    # The authZ profiles + rules below are fully automatable and DO reference
+    # the live Posture Status session attribute, so once the above GUI config
+    # exists the chain works end-to-end.
+
+    # ---------- Posture-Redirect authZ profile (triggers client scan) ----------
+    - name: Check Posture-Redirect profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile/name/{{ redirect_profile }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: prp_check
+
+    - name: Create Posture-Redirect authZ profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          AuthorizationProfile:
+            name: "{{ redirect_profile }}"
+            description: "Redirect to Client Provisioning Portal for posture scan"
+            accessType: "ACCESS_ACCEPT"
+            authzProfileType: "SWITCH"
+            webRedirection:
+              WebRedirectionType: "ClientProvisioning"
+              acl: "{{ redirect_acl_name }}"
+              portalName: "{{ client_provisioning_portal }}"
+              displayCertificatesRenewalMessages: false
+            trackMovement: false
+        status_code: [201, 400]
+      register: pr_create
+      when: prp_check.status == 404
+
+    - name: Note if Posture-Redirect needs manual creation
+      ansible.builtin.debug:
+        msg: |
+          [SKIP] Posture-Redirect could not be created via API
+          (likely because the Client Provisioning Portal name doesn't match
+          this ISE node's installed portal). Create it in the GUI:
+            Policy -> Policy Elements -> Results -> Authorization Profiles
+            Name: {{ redirect_profile }}
+            Common Tasks: enable Web Redirection
+              Type: Client Provisioning (Posture)
+              ACL: {{ redirect_acl_name }}
+              Value: pick your Client Provisioning Portal
+      when: pr_create.status is defined and pr_create.status != 201
+
+    # ---------- Compliant-Full-Access authZ profile ----------
+    - name: Check Compliant profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile/name/{{ compliant_profile }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: cp_check
+
+    - name: Create Compliant-Full-Access authZ profile
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          AuthorizationProfile:
+            name: "{{ compliant_profile }}"
+            description: "Posture-compliant endpoints get VLAN {{ compliant_vlan }} + full dACL"
+            accessType: "ACCESS_ACCEPT"
+            authzProfileType: "SWITCH"
+            vlan: { nameID: "{{ compliant_vlan }}", tagID: 1 }
+            daclName: "{{ dacl_name }}"
+            trackMovement: false
+        status_code: [201]
+      when: cp_check.status == 404
+
+    # ---------- Add posture-aware authZ rules to wireless policy set ----------
+    - name: Get wireless policy set id
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: psets
+
+    - name: Set wireless ps_id
+      ansible.builtin.set_fact:
+        wps_id: >-
+          {{ (psets.json.response | selectattr('name','equalto', policy_set_name)
+               | list | first).id }}
+
+    - name: List existing authZ rules
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ wps_id }}/authorization"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200]
+      register: az_rules
+
+    - name: Set existing names
+      ansible.builtin.set_fact:
+        az_names: "{{ az_rules.json.response | map(attribute='rule.name') | list }}"
+
+    # Rule order target (top to bottom):
+    #   rank 0: Compliant -> Compliant-Full-Access
+    #   rank 1: NonCompliant or Unknown -> Posture-Redirect
+    #   rank 2..: existing Domain Computers / Domain Users / Default
+    - name: 'Posture Compliant -> {{ compliant_profile }}'
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ wps_id }}/authorization"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          rule:
+            name: "Posture Compliant - Full Access"
+            default: false
+            state: enabled
+            rank: 0
+            condition:
+              conditionType: ConditionAttributes
+              isNegate: false
+              dictionaryName: Session
+              attributeName: PostureStatus
+              operator: equals
+              attributeValue: "Compliant"
+          profile:
+            - "{{ compliant_profile }}"
+        status_code: [200, 201]
+      when: "'Posture Compliant - Full Access' not in az_names"
+
+    - name: Check Posture-Redirect now exists before adding rule that references it
+      ansible.builtin.uri:
+        url: "{{ ers }}/authorizationprofile/name/{{ redirect_profile }}"
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json }
+        status_code: [200, 404]
+      register: prp_recheck
+
+    - name: 'Posture Unknown/NonCompliant -> {{ redirect_profile }}'
+      ansible.builtin.uri:
+        url: "{{ api }}/policy-set/{{ wps_id }}/authorization"
+        method: POST
+        user: "{{ ise_username }}"
+        password: "{{ ise_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers: { Accept: application/json, Content-Type: application/json }
+        body_format: json
+        body:
+          rule:
+            name: "Posture Unknown - Redirect to CPP"
+            default: false
+            state: enabled
+            rank: 1
+            condition:
+              conditionType: ConditionAttributes
+              isNegate: false
+              dictionaryName: Session
+              attributeName: PostureStatus
+              operator: notEquals
+              attributeValue: "Compliant"
+          profile:
+            - "{{ redirect_profile }}"
+        status_code: [200, 201]
+      when:
+        - "'Posture Unknown - Redirect to CPP' not in az_names"
+        - prp_recheck.status == 200
+
+    - name: Final state
+      ansible.builtin.debug:
+        msg:
+          - "Posture redirect ACL '{{ redirect_acl_name }}' must exist on the WLC"
+          - "Client Provisioning Portal must have an authorization rule + provisioning resource"
+          - "End-to-end test requires AnyConnect ISE Posture module on a Windows endpoint"
