@@ -1,0 +1,77 @@
+! CSR1000v / Catalyst 8000v - AAA via ISE
+! Paste this block in 'configure terminal' mode after consoling/SSH'ing
+! into the CSR (Workstation jumphost -> SSH to CSR).
+!
+! IMPORTANT: this puts 'local' FIRST in the login chain so the local
+! 'dcloud' account always works as the break-glass account; TACACS handles
+! everyone else. (Lesson learned from the WLC TACACS lockout.)
+
+! --- Local fallback user (must exist BEFORE you enable TACACS) ---
+username dcloud privilege 15 secret 0 dcloud
+enable secret 0 dcloud
+!
+! --- Baseline AAA ---
+aaa new-model
+!
+! --- RADIUS server pointing at ISE ---
+radius server ISE-PAN
+ address ipv4 {{ ise_hostname | default('198.18.133.27') }} auth-port 1812 acct-port 1813
+ key {{ radius_shared_secret | default('dCl0ud-Lab-RADIUS-S3cret-2026') }}
+!
+aaa group server radius ISE
+ server name ISE-PAN
+ ip radius source-interface {{ csr_source_interface | default('GigabitEthernet1') }}
+!
+! RADIUS dynamic-author (CoA listener)
+aaa server radius dynamic-author
+ client {{ ise_hostname | default('198.18.133.27') }} server-key {{ radius_shared_secret | default('dCl0ud-Lab-RADIUS-S3cret-2026') }}
+ auth-type any
+!
+radius-server vsa send authentication
+radius-server vsa send accounting
+radius-server attribute 6 on-for-login-auth
+radius-server attribute 8 include-in-access-req
+radius-server attribute 31 mac format ietf upper-case
+!
+! --- TACACS+ server pointing at ISE ---
+tacacs server ISE-TACACS
+ address ipv4 {{ ise_hostname | default('198.18.133.27') }}
+ port 49
+ key {{ radius_shared_secret | default('dCl0ud-Lab-RADIUS-S3cret-2026') }}
+ single-connection
+!
+aaa group server tacacs+ ISE-TACACS-GRP
+ server name ISE-TACACS
+ ip tacacs source-interface {{ csr_source_interface | default('GigabitEthernet1') }}
+!
+! --- AAA method lists (local FIRST, then TACACS) ---
+aaa authentication login default local group ISE-TACACS-GRP
+aaa authentication enable default enable
+aaa authorization exec default local group ISE-TACACS-GRP if-authenticated
+aaa authorization commands 1 default group ISE-TACACS-GRP local if-authenticated
+aaa authorization commands 15 default group ISE-TACACS-GRP local if-authenticated
+aaa accounting exec default start-stop group ISE-TACACS-GRP
+aaa accounting commands 15 default start-stop group ISE-TACACS-GRP
+!
+! Enable SSH if not already on
+ip ssh version 2
+line vty 0 4
+ transport input ssh
+ login authentication default
+ authorization exec default
+ authorization commands 1 default
+ authorization commands 15 default
+exit
+!
+end
+write memory
+!
+! ===== VALIDATION (run these AFTER pasting) =====
+! show running-config | section radius|tacacs|aaa
+! test aaa group ISE-TACACS-GRP administrator C1sco12345 new-code
+!   (should return 'Pass' or 'User authenticated' for an AD user)
+! test aaa group ISE administrator C1sco12345 new-code
+!   (RADIUS test)
+!
+! Then exit and SSH back in as 'administrator' (AD user via TACACS)
+! to verify the chain end-to-end.

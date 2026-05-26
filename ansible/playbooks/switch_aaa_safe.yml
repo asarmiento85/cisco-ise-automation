@@ -1,0 +1,144 @@
+---
+# AAA on IOS-XE switches / routers (CSR, ISR, Cat9300, etc.) — SAFE PATTERN.
+#
+# ============================================================================
+# WHY THIS PATTERN (read before changing)
+# ============================================================================
+# In an earlier round we tried "full" command authorization:
+#
+#   aaa authorization commands 1  default group ISE-TACACS-GRP local if-authenticated
+#   aaa authorization commands 15 default group ISE-TACACS-GRP local if-authenticated
+#
+# Behavior on IOS-XE 17.04 / 17.09:
+#   - TACACS first: ISE consulted for every command typed
+#   - If user is in AD and matches a Device Admin authZ rule, gets command set
+#   - If user is LOCAL (admin, dcloud, break-glass), ISE replies REJECT
+#     (user not in AD), and IOS-XE DOES NOT fall through to 'local' or
+#     'if-authenticated' on REJECT — it only falls through on TIMEOUT.
+#   - Net effect: any local user can log in but cannot run a single command.
+#     'configure terminal', 'show', 'write memory', 'reload' all fail with
+#     "Command authorization failed". Only a console reload recovers.
+#
+# This pattern is therefore deliberately MINIMAL:
+#   - aaa authentication login    -> local FIRST, then TACACS group
+#   - aaa authentication enable    -> use enable secret (never TACACS)
+#   - aaa authorization exec       -> local FIRST, then TACACS group, if-authenticated last
+#   - NO aaa authorization commands at all
+#   - aaa accounting               -> log everything to ISE for audit
+#
+# What we LOSE: per-command policy enforcement (Helpdesk can 'configure
+# terminal' if they want to). For a lab / standard enterprise, that's the
+# right tradeoff; the alternative is a lockout-prone configuration.
+#
+# If you NEED per-command authz (regulated environment), build it on a
+# DIFFERENT NAD first, test the fallback paths exhaustively, and ONLY
+# enable on production gear after you've verified a local-user can break-
+# glass without ISE reachability.
+# ============================================================================
+
+- name: Switch/router - AAA via ISE (safe pattern, no command authz)
+  hosts: switches
+  gather_facts: false
+  vars_files:
+    - ../vault/secrets.yml
+  vars:
+    radius_server_name: ISE-PAN
+    radius_group_name: ISE
+    tacacs_server_name: ISE-TACACS
+    tacacs_group_name: ISE-TACACS-GRP
+    aaa_source_interface: GigabitEthernet1   # matches NAD IP for ISE
+  tasks:
+
+    # 1. Local break-glass user MUST exist before AAA is enabled
+    - name: Local fallback user (priv 15)
+      cisco.ios.ios_config:
+        lines:
+          - "username {{ switch_username }} privilege 15 secret 0 {{ switch_password }}"
+          - "enable secret 0 {{ switch_enable }}"
+
+    # 2. Baseline AAA
+    - name: aaa new-model
+      cisco.ios.ios_config:
+        lines:
+          - "aaa new-model"
+
+    # 3. RADIUS server pointing at ISE
+    - name: RADIUS server entry
+      cisco.ios.ios_config:
+        lines:
+          - "address ipv4 {{ ise_hostname }} auth-port 1812 acct-port 1813"
+          - "key {{ radius_shared_secret }}"
+        parents: "radius server {{ radius_server_name }}"
+
+    - name: RADIUS group + source-interface
+      cisco.ios.ios_config:
+        lines:
+          - "server name {{ radius_server_name }}"
+          - "ip radius source-interface {{ aaa_source_interface }}"
+        parents: "aaa group server radius {{ radius_group_name }}"
+
+    - name: RADIUS CoA listener
+      cisco.ios.ios_config:
+        lines:
+          - "client {{ ise_hostname }} server-key {{ radius_shared_secret }}"
+          - "auth-type any"
+        parents: "aaa server radius dynamic-author"
+
+    - name: RADIUS VSA + attributes
+      cisco.ios.ios_config:
+        lines:
+          - "radius-server vsa send authentication"
+          - "radius-server vsa send accounting"
+          - "radius-server attribute 6 on-for-login-auth"
+          - "radius-server attribute 31 mac format ietf upper-case"
+
+    # 4. TACACS+ server pointing at ISE
+    - name: TACACS+ server entry
+      cisco.ios.ios_config:
+        lines:
+          - "address ipv4 {{ ise_hostname }}"
+          - "port 49"
+          - "key {{ radius_shared_secret }}"
+          - "single-connection"
+        parents: "tacacs server {{ tacacs_server_name }}"
+
+    - name: TACACS+ group + source-interface
+      cisco.ios.ios_config:
+        lines:
+          - "server name {{ tacacs_server_name }}"
+          - "ip tacacs source-interface {{ aaa_source_interface }}"
+        parents: "aaa group server tacacs+ {{ tacacs_group_name }}"
+
+    # 5. AAA method lists — SAFE PATTERN
+    # local FIRST in login + exec so break-glass always works on REJECT
+    # NO aaa authorization commands — avoids the IOS-XE no-fallback-on-reject trap
+    - name: AAA method lists (safe)
+      cisco.ios.ios_config:
+        lines:
+          - "aaa authentication login default local group {{ tacacs_group_name }}"
+          - "aaa authentication enable default enable"
+          - "aaa authorization exec default local group {{ tacacs_group_name }} if-authenticated"
+          - "aaa accounting exec default start-stop group {{ tacacs_group_name }}"
+          - "aaa accounting commands 15 default start-stop group {{ tacacs_group_name }}"
+
+    # 6. Save and verify
+    - name: Save running-config
+      cisco.ios.ios_command:
+        commands:
+          - command: "write memory"
+            prompt: "\\[confirm\\]"
+            answer: "y"
+      changed_when: true
+
+    - name: Test AAA paths
+      cisco.ios.ios_command:
+        commands:
+          - "test aaa group {{ radius_group_name }} probe probe new-code"
+          - "show aaa servers | include RADIUS:|State|Authen"
+      register: aaa_state
+      failed_when: false
+      changed_when: false
+
+    - name: Display
+      ansible.builtin.debug:
+        var: aaa_state.stdout_lines

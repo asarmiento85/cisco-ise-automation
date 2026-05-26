@@ -1,6 +1,11 @@
 ---
 # Configure the vWLC to use ISE for TACACS+ admin login.
 # Keeps local 'dcloud' user as fallback so we don't lock ourselves out.
+#
+# NOTE: this playbook still uses 'group ISE first, local fallback'. For new
+# devices, prefer playbooks/switch_aaa_safe.yml which uses 'local FIRST' and
+# omits per-command authorization. See the long comment in switch_aaa_safe.yml
+# for the lockout pattern that motivated the change.
 
 - name: WLC - TACACS+ for admin access via ISE
   hosts: wlc
