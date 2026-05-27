@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>ISE Audit Report — {{ meta.pan }}</title>
+<style>
+  @page { size: A4; margin: 18mm 14mm; @bottom-right { content: "Page " counter(page) " / " counter(pages); font-size: 9pt; color: #888; } }
+  :root {
+    --ink: #111827;
+    --muted: #6b7280;
+    --rule: #e5e7eb;
+    --bg: #ffffff;
+    --hi: #dc2626;
+    --med: #d97706;
+    --low: #2563eb;
+    --info: #4b5563;
+    --ok: #059669;
+    --brand: #0b3d91;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); margin: 0; font-size: 10.5pt; line-height: 1.45; }
+  header.cover { padding: 28pt 24pt; border-bottom: 4px solid var(--brand); margin-bottom: 18pt; page-break-after: always; }
+  header.cover h1 { font-size: 24pt; margin: 0 0 10pt 0; color: var(--brand); }
+  header.cover .sub { color: var(--muted); font-size: 11pt; }
+  header.cover .meta { margin-top: 18pt; font-size: 10pt; }
+  header.cover .meta div { margin: 2pt 0; }
+  h2 {
+    color: var(--brand);
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 4pt;
+    margin-top: 22pt;
+    font-size: 14pt;
+    break-after: avoid;
+    break-inside: avoid;
+    page-break-after: avoid;
+    page-break-inside: avoid;
+  }
+  h3 {
+    margin-top: 14pt;
+    font-size: 11.5pt;
+    color: #1f2937;
+    break-after: avoid;
+    break-inside: avoid;
+    page-break-after: avoid;
+    page-break-inside: avoid;
+  }
+  h4 {
+    margin-top: 8pt;
+    margin-bottom: 4pt;
+    font-size: 10.5pt;
+    color: #1f2937;
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+  /* Glue the element after a heading to the heading itself */
+  h2 + *, h3 + *, h4 + * {
+    break-before: avoid;
+    page-break-before: avoid;
+  }
+  /* A paragraph immediately after a heading is an intro — glue it to whatever follows. */
+  h2 + p, h3 + p, h4 + p {
+    break-after: avoid;
+    page-break-after: avoid;
+  }
+  /* Paragraph orphan/widow control */
+  p { orphans: 3; widows: 3; }
+  section { page-break-inside: avoid; }
+  table { width: 100%; border-collapse: collapse; margin: 6pt 0 12pt 0; font-size: 9.5pt; }
+  th, td { padding: 5pt 7pt; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
+  th { background: #f9fafb; font-weight: 600; color: #374151; }
+  tr:nth-child(even) td { background: #fafafa; }
+  .pill { display: inline-block; padding: 1pt 7pt; border-radius: 999px; font-size: 8.5pt; font-weight: 600; }
+  .sev-high { background: #fee2e2; color: var(--hi); }
+  .sev-med  { background: #fef3c7; color: var(--med); }
+  .sev-low  { background: #dbeafe; color: var(--low); }
+  .sev-info { background: #f3f4f6; color: var(--info); }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10pt; margin-bottom: 8pt; }
+  .card { border: 1px solid var(--rule); border-radius: 6pt; padding: 10pt 12pt; }
+  .card .label { font-size: 8.5pt; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4pt; }
+  .card .value { font-size: 18pt; font-weight: 700; color: var(--ink); margin-top: 4pt; }
+  .card.high .value { color: var(--hi); }
+  .card.med .value  { color: var(--med); }
+  .card.low .value  { color: var(--low); }
+  .card.info .value { color: var(--info); }
+  .card.ok .value   { color: var(--ok); }
+  .muted { color: var(--muted); }
+  .small { font-size: 9pt; }
+  .mono { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 9pt; }
+  .tag { display: inline-block; padding: 1pt 5pt; background: #f3f4f6; border-radius: 4pt; margin: 1pt 2pt 1pt 0; font-size: 8.5pt; color: #374151; }
+  .barwrap { background: #f3f4f6; border-radius: 4pt; overflow: hidden; height: 8pt; }
+  .bar { height: 100%; }
+  .bar.hi { background: var(--hi); }
+  .bar.md { background: var(--med); }
+  .bar.lo { background: var(--low); }
+  .bar.in { background: var(--info); }
+  .nowrap { white-space: nowrap; }
+  footer.report { margin-top: 18pt; color: var(--muted); font-size: 8.5pt; border-top: 1px solid var(--rule); padding-top: 6pt; }
+  ul.compact { margin: 4pt 0 4pt 16pt; padding: 0; }
+  ul.compact li { margin: 1pt 0; }
+
+  /* Recommendations */
+  .rec { border: 1px solid var(--rule); border-radius: 6pt; padding: 10pt 12pt; margin: 8pt 0; page-break-inside: avoid; }
+  .rec-head { display: flex; align-items: baseline; gap: 8pt; margin-bottom: 4pt; }
+  .rec-head h3 { margin: 0; flex: 1; font-size: 11pt; color: var(--ink); }
+  .rec-id { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 9pt; color: var(--muted); }
+  .rec-meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6pt 12pt; font-size: 9pt; margin: 6pt 0; }
+  .rec-meta .k { color: var(--muted); text-transform: uppercase; font-size: 7.5pt; letter-spacing: 0.4pt; }
+  .rec-meta .v { color: var(--ink); }
+  .rec p { margin: 4pt 0; font-size: 9.5pt; }
+  .rec ol { margin: 4pt 0 4pt 18pt; padding: 0; font-size: 9.5pt; }
+  .rec ol li { margin: 2pt 0; }
+  .rec .addresses { font-size: 8.5pt; color: var(--muted); margin-top: 6pt; border-top: 1px dashed var(--rule); padding-top: 4pt; }
+  .prio-P1 { background: #fee2e2; color: var(--hi); }
+  .prio-P2 { background: #fef3c7; color: var(--med); }
+  .prio-P3 { background: #dbeafe; color: var(--low); }
+</style>
+</head>
+<body>
+
+<header class="cover">
+  <div class="sub">Cisco Identity Services Engine</div>
+  <h1>Read-Only Deployment Audit</h1>
+  <div class="meta">
+    <div><strong>PAN:</strong> <span class="mono">{{ meta.pan }}</span></div>
+    <div><strong>Run by:</strong> <span class="mono">{{ meta.user }}</span></div>
+    <div><strong>Timestamp:</strong> <span class="mono">{{ meta.timestamp }}</span></div>
+    <div><strong>Endpoint coverage:</strong> {{ summary.endpoint_coverage.ok }} / {{ summary.endpoint_coverage.total }} ({{ summary.endpoint_coverage.pct }}%)</div>
+  </div>
+  <p class="small muted" style="margin-top: 22pt;">All data was retrieved via authenticated read-only ERS / OpenAPI calls. No configuration was changed. Sensitive material (passwords, shared secrets, private keys) is not exposed by the API and is not present in this report.</p>
+</header>
+
+<h2>1. Executive summary</h2>
+<div class="grid">
+  <div class="card high"><div class="label">High findings</div><div class="value">{{ summary.severity.high }}</div></div>
+  <div class="card med"><div class="label">Medium</div><div class="value">{{ summary.severity.med }}</div></div>
+  <div class="card low"><div class="label">Low</div><div class="value">{{ summary.severity.low }}</div></div>
+  <div class="card info"><div class="label">Info</div><div class="value">{{ summary.severity.info }}</div></div>
+</div>
+<div class="grid">
+  <div class="card"><div class="label">Nodes</div><div class="value">{{ summary.counts.nodes }}</div></div>
+  <div class="card"><div class="label">NADs</div><div class="value">{{ summary.counts.nads }}</div></div>
+  <div class="card"><div class="label">Policy sets</div><div class="value">{{ summary.counts.policy_sets }}</div></div>
+  <div class="card"><div class="label">Authz profiles</div><div class="value">{{ summary.counts.authz_profiles }}</div></div>
+  <div class="card"><div class="label">Endpoint groups</div><div class="value">{{ summary.counts.endpoint_groups }}</div></div>
+  <div class="card"><div class="label">Internal users</div><div class="value">{{ summary.counts.internal_users }}</div></div>
+  <div class="card"><div class="label">Admins</div><div class="value">{{ summary.counts.admin_users }}</div></div>
+  <div class="card"><div class="label">SGTs</div><div class="value">{{ summary.counts.sgts }}</div></div>
+</div>
+
+<h2>2. Findings</h2>
+{% if findings %}
+<table>
+  <thead><tr><th class="nowrap">Severity</th><th>Category</th><th>Finding</th></tr></thead>
+  <tbody>
+  {% for f in findings %}
+    <tr>
+      <td class="nowrap"><span class="pill sev-{{ f.severity }}">{{ f.severity|upper }}</span></td>
+      <td class="nowrap">{{ f.category }}</td>
+      <td>{{ f.msg }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No heuristic findings surfaced by this audit pass.</p>
+{% endif %}
+
+<h2>3. Recommendations</h2>
+<p class="small muted">Prioritized actions derived from findings, plus operational hygiene that applies regardless. <strong>P1</strong> = act this sprint · <strong>P2</strong> = plan this quarter · <strong>P3</strong> = opportunistic cleanup.</p>
+
+{% if recommendations %}
+{% set rec_groups = {'P1': [], 'P2': [], 'P3': []} %}
+{% for r in recommendations %}{% if rec_groups[r.priority] is defined %}{% set _ = rec_groups[r.priority].append(r) %}{% endif %}{% endfor %}
+
+{% for prio in ['P1', 'P2', 'P3'] %}
+{% if rec_groups[prio] %}
+<h3>{{ prio }} · {{ rec_groups[prio]|length }} item{{ 's' if rec_groups[prio]|length != 1 else '' }}</h3>
+{% for r in rec_groups[prio] %}
+<div class="rec">
+  <div class="rec-head">
+    <span class="pill prio-{{ r.priority }}">{{ r.priority }}</span>
+    <h3>{{ r.title }}</h3>
+    <span class="rec-id">{{ r.id }}</span>
+  </div>
+  <div class="rec-meta">
+    <div><div class="k">Category</div><div class="v">{{ r.category }}</div></div>
+    <div><div class="k">Effort</div><div class="v">{{ r.effort }}</div></div>
+    <div><div class="k">Risk</div><div class="v">{{ r.risk }}</div></div>
+    <div><div class="k">Addresses</div><div class="v">{{ r.addresses|length }} finding{{ 's' if r.addresses|length != 1 else '' }}</div></div>
+  </div>
+  <p><strong>Rationale.</strong> {{ r.rationale }}</p>
+  <p><strong>Recommended steps:</strong></p>
+  <ol>
+    {% for s in r.steps %}
+      <li>{{ s }}</li>
+    {% endfor %}
+  </ol>
+  {% if r.doc_refs %}
+  <p class="small muted"><strong>References:</strong> {{ r.doc_refs|join(' · ') }}</p>
+  {% endif %}
+  {% if r.addresses %}
+  <div class="addresses">
+    <strong>Addresses:</strong>
+    <ul class="compact">
+      {% for a in r.addresses %}<li>{{ a }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+{% endfor %}
+{% else %}
+<p class="muted">No recommendations generated.</p>
+{% endif %}
+
+<h2>4. Deployment</h2>
+<table>
+  <thead><tr><th>Hostname</th><th>Personas</th><th>Roles</th><th>Status</th><th>Version</th></tr></thead>
+  <tbody>
+  {% for n in nodes %}
+    <tr>
+      <td class="mono">{{ n.hostname }}</td>
+      <td>{% for p in n.personas or [] %}<span class="tag">{{ p }}</span>{% endfor %}</td>
+      <td>{% for r in n.roles or [] %}<span class="tag">{{ r }}</span>{% endfor %}</td>
+      <td>{{ n.nodeStatus or '-' }}</td>
+      <td class="mono small">{{ n.ipAddresses or n.fqdn or '-' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if patches %}
+<h3>Patches / hotpatches</h3>
+<p class="small">
+  {% if patches is mapping %}
+    {{ patches.get('installedPatchVersion') or patches.get('patchVersion') or patches }}
+  {% else %}
+    {{ patches|length }} patches reported.
+    {% if patches and patches[0] is mapping %}
+      Latest: <span class="mono">{{ patches[0].patchVersion or patches[0].patchNumber or '-' }}</span>
+    {% endif %}
+  {% endif %}
+</p>
+{% endif %}
+
+{% if license_smart %}
+<h3>Smart Licensing</h3>
+<table>
+  <tbody>
+  {% if license_smart is mapping %}
+    {% for k, v in license_smart.items() %}
+      <tr><td class="mono small nowrap">{{ k }}</td><td class="small">{{ v }}</td></tr>
+    {% endfor %}
+  {% else %}
+    <tr><td class="small">{{ license_smart }}</td></tr>
+  {% endif %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2>5. Network access devices</h2>
+<table>
+  <thead><tr><th>Name</th><th>IP / mask</th><th>Profile</th><th>NDGs</th><th>CoA port</th></tr></thead>
+  <tbody>
+  {% for n in nads %}
+    <tr>
+      <td class="mono">{{ n.name }}</td>
+      <td class="mono small">
+        {%- for ip in n.NetworkDeviceIPList or [] -%}
+          {{ ip.ipaddress }}/{{ ip.mask }}{% if not loop.last %}, {% endif %}
+        {%- else -%}<span class="muted">—</span>{%- endfor -%}
+      </td>
+      <td>{{ n.profileName or '-' }}</td>
+      <td class="small">
+        {%- for g in n.NetworkDeviceGroupList or [] -%}
+          <span class="tag">{{ g.split('#')[-1] }}</span>
+        {%- endfor -%}
+      </td>
+      <td class="mono small">{{ n.coaPort or '-' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h3>Network device groups</h3>
+<p class="small">
+  {%- for g in ndgs -%}<span class="tag">{{ g.name }}</span>{%- endfor -%}
+</p>
+
+<h2>6. Identity</h2>
+<div class="grid">
+  <div class="card"><div class="label">User identity groups</div><div class="value">{{ summary.counts.user_groups }}</div></div>
+  <div class="card"><div class="label">Endpoint identity groups</div><div class="value">{{ summary.counts.endpoint_groups }}</div></div>
+  <div class="card"><div class="label">Internal users</div><div class="value">{{ summary.counts.internal_users }}</div></div>
+  <div class="card"><div class="label">Admin users</div><div class="value">{{ summary.counts.admin_users }}</div></div>
+</div>
+
+<h3>Admin users</h3>
+<table>
+  <thead><tr><th>Name</th><th>Enabled</th><th>Admin groups</th></tr></thead>
+  <tbody>
+  {% for a in admin_users %}
+    <tr>
+      <td class="mono">{{ a.name }}</td>
+      <td>{{ a.enabled }}</td>
+      <td class="small">
+        {%- for g in a.adminGroups or [] -%}<span class="tag">{{ g }}</span>{%- endfor -%}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if ad_join_points %}
+<h3>Active Directory join points</h3>
+<table>
+  <thead><tr><th>Name</th><th>Domain</th><th>Joined</th></tr></thead>
+  <tbody>
+  {% for jp in ad_join_points %}
+    <tr><td class="mono">{{ jp.name or '-' }}</td><td class="mono">{{ jp.domain or '-' }}</td><td>{{ jp.adAttributes or jp.id or '-' }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h3>Identity source sequences</h3>
+<table>
+  <thead><tr><th>Name</th><th>Sources</th></tr></thead>
+  <tbody>
+  {% for s in identity_sequences %}
+    <tr><td class="mono">{{ s.name }}</td><td class="small">{{ s.description or '-' }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>7. Policy — network access</h2>
+{% for ps in policy_sets_detail %}
+<section>
+  <h3>Set: {{ ps.policy_set.name }} <span class="muted small">({{ ps.policy_set.state or 'enabled' }})</span></h3>
+  <p class="small muted">{{ ps.policy_set.description or '' }}</p>
+  <h4 class="small">Authentication rules ({{ ps.authentication|length }})</h4>
+  <table>
+    <thead><tr><th>Name</th><th>Identity store</th><th>State</th></tr></thead>
+    <tbody>
+      {% for r in ps.authentication %}
+        <tr>
+          <td class="mono small">{{ r.rule.name if r.rule else '-' }}</td>
+          <td class="small">{{ r.identitySourceName or '-' }}</td>
+          <td class="small">{{ r.rule.state if r.rule else '-' }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <h4 class="small">Authorization rules ({{ ps.authorization|length }})</h4>
+  <table>
+    <thead><tr><th>Name</th><th>Profile(s)</th><th>Security Group</th><th>State</th></tr></thead>
+    <tbody>
+      {% for r in ps.authorization %}
+        <tr>
+          <td class="mono small">{{ r.rule.name if r.rule else '-' }}</td>
+          <td class="small">
+            {%- for p in r.profile or [] -%}<span class="tag">{{ p }}</span>{%- endfor -%}
+          </td>
+          <td class="small">{{ r.securityGroup or '-' }}</td>
+          <td class="small">{{ r.rule.state if r.rule else '-' }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endfor %}
+
+<h2>8. Policy — device admin (TACACS+)</h2>
+{% if device_admin_sets_detail %}
+{% for ps in device_admin_sets_detail %}
+<section>
+  <h3>Set: {{ ps.policy_set.name }}</h3>
+  <p class="small">Auth rules: {{ ps.authentication|length }} · Authz rules: {{ ps.authorization|length }}</p>
+  <table>
+    <thead><tr><th>Authz rule</th><th>Shell profile</th><th>Command sets</th><th>State</th></tr></thead>
+    <tbody>
+      {% for r in ps.authorization %}
+        <tr>
+          <td class="mono small">{{ r.rule.name if r.rule else '-' }}</td>
+          <td class="small">{{ r.shellProfile or '-' }}</td>
+          <td class="small">
+            {%- for cs in r.commandSets or [] -%}<span class="tag">{{ cs }}</span>{%- endfor -%}
+          </td>
+          <td class="small">{{ r.rule.state if r.rule else '-' }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endfor %}
+{% else %}
+<p class="muted">Device admin (TACACS+) service not enabled, or no policy sets present.</p>
+{% endif %}
+
+<h2>9. Authorization profiles &amp; dACLs</h2>
+<h3>Authorization profiles ({{ authz_profiles|length }})</h3>
+<table>
+  <thead><tr><th>Name</th><th>VLAN</th><th>dACL</th><th>Web redirect</th></tr></thead>
+  <tbody>
+  {% for p in authz_profiles %}
+    <tr>
+      <td class="mono small">{{ p.name }}</td>
+      <td class="small">{{ p.vlan.nameID if p.vlan else '-' }}</td>
+      <td class="small">{{ p.daclName or '-' }}</td>
+      <td class="small">{{ p.webRedirection.WebRedirectionType if p.webRedirection else '-' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h3>Downloadable ACLs ({{ dacls|length }})</h3>
+<table>
+  <thead><tr><th>Name</th><th>Type</th></tr></thead>
+  <tbody>
+  {% for d in dacls %}
+    <tr><td class="mono small">{{ d.name }}</td><td class="small">{{ d.daclType or '-' }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>10. TrustSec</h2>
+{% if sgts %}
+<p class="small">{{ sgts|length }} SGTs · {{ sgacls|length }} SGACLs · {{ egress_matrix_cells|length }} egress matrix cells</p>
+<table>
+  <thead><tr><th>SGT name</th><th>Value</th><th>Description</th></tr></thead>
+  <tbody>
+  {% for s in sgts[:40] %}
+    <tr>
+      <td class="mono small">{{ s.name }}</td>
+      <td class="mono small">{{ s.value }}</td>
+      <td class="small">{{ s.description or '-' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">TrustSec not in use or not exposed by this endpoint.</p>
+{% endif %}
+
+<h2>11. Guest &amp; portals</h2>
+<p class="small">Guest types: {{ guest_types|length }} · Sponsor groups: {{ sponsor_groups|length }} · Portals: {{ portals|length }}</p>
+{% if portals %}
+<table>
+  <thead><tr><th>Portal</th><th>Type</th></tr></thead>
+  <tbody>
+  {% for p in portals %}
+    <tr><td class="mono small">{{ p.name }}</td><td class="small">{{ p.portalType or '-' }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2>12. Profiler</h2>
+<p class="small">{{ profiler_policies|length }} profiler policies present.</p>
+
+<h2>13. Certificates</h2>
+<h3>System certificates (PAN: {{ pan_hostname }})</h3>
+<table>
+  <thead><tr><th>Friendly name</th><th>Used by</th><th>Expires</th><th>Signature</th></tr></thead>
+  <tbody>
+  {% for c in system_certs %}
+    <tr>
+      <td class="small">{{ c.friendlyName }}</td>
+      <td class="small">{{ c.usedBy }}</td>
+      <td class="mono small">{{ c.expirationDate }}</td>
+      <td class="small">{{ c.signatureAlgorithm or '-' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<h3>Trusted certificates</h3>
+<p class="small">{{ trusted_certs|length }} trusted certs in store.</p>
+
+<h2>14. Backups &amp; repositories</h2>
+<table>
+  <thead><tr><th>Name</th><th>Protocol</th><th>Path</th><th>Server</th></tr></thead>
+  <tbody>
+  {% for r in repositories %}
+    <tr>
+      <td class="mono small">{{ r.name }}</td>
+      <td class="small">{{ r.protocol }}</td>
+      <td class="mono small">{{ r.path or '-' }}</td>
+      <td class="mono small">{{ r.serverName or '-' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% if backup_schedule_config %}
+<p class="small muted">Schedule config keys: {{ backup_schedule_config.keys()|list }}</p>
+{% endif %}
+
+<h2>15. Endpoint coverage matrix</h2>
+<p class="small muted">Which audit endpoints responded successfully. Failed endpoints typically mean the feature is disabled, the persona doesn't expose it, or the patch level predates the OpenAPI route.</p>
+<table>
+  <thead><tr><th>Endpoint</th><th>OK</th><th>Detail</th></tr></thead>
+  <tbody>
+  {% for k, v in coverage.items()|sort %}
+    <tr>
+      <td class="mono small">{{ k }}</td>
+      <td>{% if v.ok %}<span class="pill sev-low">OK</span>{% else %}<span class="pill sev-high">FAIL</span>{% endif %}</td>
+      <td class="small muted">
+        {%- if v.ok -%}count={{ v.count }}{%- else -%}{{ v.status or v.error or 'unknown' }}{%- endif -%}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<footer class="report">
+  Generated by ise-automation/audit. Data is point-in-time as of {{ meta.timestamp }}. This report intentionally excludes secrets, password hashes, certificate private keys, and full identity records.
+</footer>
+
+</body>
+</html>

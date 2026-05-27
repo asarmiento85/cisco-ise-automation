@@ -14,6 +14,7 @@ Covers the most common ISE use cases as code:
 - MAB for IoT endpoints (MAC-bypass with internal endpoint groups)
 - ISE config snapshot / restore with secret redaction
 - End-to-end RADIUS smoke tests (positive + negative for both AD and MAB)
+- **Read-only deployment audit** with HTML + PDF report (52 ERS/OpenAPI endpoints, heuristic findings, prioritized recommendations)
 
 ## Stack
 
@@ -48,17 +49,24 @@ ansible/
 └── vault/secrets.yml              # ansible-vault encrypted (template in secrets.example.yml)
 
 python/
-├── pyproject.toml
-├── ise_api/                       # ERS / OpenAPI client
+├── pyproject.toml                 # base deps + [report] extra for PDF
+├── ise_api/                       # ERS / OpenAPI client + audit library
 │   ├── client.py                  # httpx + retry + pagination
 │   ├── nads.py
 │   ├── policy.py
-│   └── endpoints.py
-└── scripts/
-    ├── health_check.py            # quick reachability + NAD list
-    ├── bulk_import_nads.py        # CSV -> NADs
-    ├── export_config_backup.py    # snapshot with secret redaction
-    └── restore_config.py          # POST/PUT replay
+│   ├── endpoints.py
+│   ├── audit.py                   # read-only collector + heuristic analyzer + redactor
+│   └── recommendations.py         # remediation catalog (REC-* keyed)
+├── scripts/
+│   ├── health_check.py            # quick reachability + NAD list
+│   ├── bulk_import_nads.py        # CSV -> NADs
+│   ├── export_config_backup.py    # snapshot with secret redaction
+│   ├── restore_config.py          # POST/PUT replay
+│   ├── audit_sample.py            # lightweight live console audit
+│   └── audit_deep.py              # full audit → HTML / PDF / JSON report
+├── templates/
+│   └── report.html.j2             # Jinja2 report template (print-friendly CSS)
+└── audit-output/                  # generated reports (gitignored)
 
 switch_configs/templates/          # Jinja2 IOS-XE for IBNS 2.0 wired dot1x
 docs/                              # VM install + post-install runbook
@@ -128,6 +136,67 @@ ok: [ubuntu-server] => {
 }
 ```
 
+## Auditing an existing deployment
+
+For consulting engagements, drift checks, or quarterly health reviews against
+an already-deployed ISE, run the read-only audit. It pulls 52 ERS / OpenAPI
+endpoints, derives heuristic findings, maps them to a remediation catalog
+with priority / effort / risk, and renders a report.
+
+```bash
+cd python
+uv sync --extra report             # one-time: installs jinja2 + weasyprint
+
+# HTML + JSON (always written)
+uv run python -m scripts.audit_deep
+
+# HTML + JSON + PDF
+uv run python -m scripts.audit_deep --pdf
+
+# JSON only (smallest output; works without the [report] extra)
+uv run python -m scripts.audit_deep --json-only
+
+# Custom output dir (one per customer / engagement)
+uv run python -m scripts.audit_deep --pdf --out customer-acme-2026q2
+```
+
+All API calls are GETs — no state on the PAN is changed. The audit account
+should be ISE's `ERS Operator` role (read-only); it does not require Super
+Admin. Source IP allowlisting in ISE's API access settings is recommended.
+
+**Sample findings** the audit will flag (non-exhaustive):
+
+| Category | Examples |
+|---|---|
+| Certificates | expired / near-expiry system certs, SHA-1 signatures, self-signed in prod, expiring trusted-store certs |
+| NAD inventory | NADs with no IP, duplicate IPs, missing Location / Device Type NDGs, non-default CoA port |
+| Admin access | default `admin` enabled, Super Admin sprawl |
+| Backups | missing repo, FTP-based repo, no scheduled backup |
+| Policy | PermitAccess catch-all rules, unused authz profiles |
+| Device admin | per-command TACACS+ authz (lockout failure mode if TACACS becomes unreachable) |
+| TrustSec | SGTs defined without egress matrix enforcement |
+
+Each finding is keyed to a recommendation in
+`ise_api/recommendations.py:REC_CATALOG` with rationale, GUI/CLI steps,
+effort estimate, and operational risk. Plus four always-on operational
+hygiene recommendations (`REC-OPS-*`) covering audit cadence, break-glass
+procedure, PSIRT subscription, and patch latency review.
+
+### Customer-friendly delivery options
+
+Some customers are reluctant to expose ERS to a consultant. Pick the
+tier that matches their comfort level:
+
+| Tier | Method | Customer effort | Coverage |
+|---|---|---|---|
+| A | Read-only admin role + screen share | Low | Medium (visual) |
+| B | Customer-driven GUI exports + ISE Health Checker | Medium | High for policy/NAD/identity |
+| C | This audit script via read-only ERS account | Low for them, high for you | Highest, repeatable, diffable |
+
+For Tier C, hand the customer this repo, have them create the read-only
+ERS account, run `audit_deep.py --json-only` themselves, and email you the
+JSON. You never touch their API.
+
 ## Security notes
 
 - Real credentials live in `.env` (gitignored) for the Python client and
@@ -136,8 +205,14 @@ ok: [ubuntu-server] => {
 - The backup script redacts known plaintext secret fields before writing —
   see `python/scripts/export_config_backup.py:SECRET_FIELD_NAMES`. If you
   extend the snapshot to new resource types, audit for new secret fields.
-- `backups/*/` is gitignored by default. Treat snapshots as local artifacts
-  unless your repo is private and you've confirmed redaction coverage.
+- The audit pipeline (`ise_api/audit.py:_SECRET_FIELD_NAMES`) applies the
+  same redactor before persisting any report. ISE's ERS API returns NAD
+  RADIUS/TACACS shared secrets, SNMP communities, and several password
+  fields in plaintext to authenticated admins; the audit strips them so
+  HTML / PDF / JSON outputs are safe to share.
+- `backups/*/` and `python/audit-output/` are gitignored by default.
+  Treat snapshots and reports as local artifacts unless your repo is
+  private and you've confirmed redaction coverage.
 
 ## License
 

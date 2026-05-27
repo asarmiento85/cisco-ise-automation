@@ -56,3 +56,8 @@ switch_configs/rendered/*
 # Remove these lines if you want every local backup tracked.
 backups/*/
 backups/latest
+
+# Audit reports — point-in-time data dumps. ise_api/audit.py redacts known
+# credential fields, but reports still capture deployment-specific identifiers
+# (NAD names, IPs, admin user names, cert subjects). Keep local.
+python/audit-output/

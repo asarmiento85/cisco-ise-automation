@@ -21,6 +21,10 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
 ]
+report = [
+    "jinja2>=3.1",
+    "weasyprint>=62.0",
+]
 
 [tool.uv]
 package = false
