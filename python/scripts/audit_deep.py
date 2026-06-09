@@ -262,12 +262,20 @@ _APP_SCRIPT = """
 """
 
 
-def inject_app_chrome(html: str) -> str:
+def inject_app_chrome(html: str, extra_toolbar_html: str = "") -> str:
     """Layer the interactive toolbar + JS onto rendered report HTML.
 
     Produces a single self-contained file (no external requests) suitable for
     double-clicking from disk. The toolbar is hidden when printing.
+
+    extra_toolbar_html, if given, is inserted just before the Print button —
+    used by the local web server to add JSON/HTML download links.
     """
+    toolbar = _APP_TOOLBAR
+    if extra_toolbar_html:
+        toolbar = toolbar.replace(
+            '<button id="app-print">', extra_toolbar_html + '<button id="app-print">'
+        )
     if "</head>" in html:
         html = html.replace("</head>", _APP_STYLE + "</head>", 1)
     # toolbar right after <body ...>
@@ -275,7 +283,7 @@ def inject_app_chrome(html: str) -> str:
     if body_idx != -1:
         gt = html.find(">", body_idx)
         if gt != -1:
-            html = html[: gt + 1] + _APP_TOOLBAR + html[gt + 1 :]
+            html = html[: gt + 1] + toolbar + html[gt + 1 :]
     if "</body>" in html:
         html = html.replace("</body>", _APP_SCRIPT + "</body>", 1)
     return html

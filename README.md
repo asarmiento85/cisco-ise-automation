@@ -171,6 +171,30 @@ uv run python -m scripts.audit_deep --pdf --app --out customer-acme-2026q2
 uv run python -m scripts.audit_deep --from-json audit-output/audit-20260101-120000.json
 ```
 
+### Local web UI — no scripting, no CLI
+
+For customers who want to *run* the audit themselves but won't touch a
+terminal workflow: download the repo, run one command, and a browser form
+opens on localhost.
+
+```bash
+cd python
+uv run --extra web python -m scripts.serve
+# → opens http://127.0.0.1:8765 — enter PAN host + read-only ERS account,
+#   click Run Audit, report renders in the browser (~20-60s)
+```
+
+How it works: the browser only ever talks to `127.0.0.1` (same origin — no
+CORS), and the Python backend makes the ISE API calls server-side, where the
+self-signed admin cert is handled. The server binds to loopback only, nothing
+is exposed on the network, credentials are used transiently and never written
+to disk or logged, and the rendered report carries Download JSON / HTML
+buttons plus the browser's own Print → Save-as-PDF. A wrong host or password
+fails fast (~6s) with a plain-English error page instead of hanging.
+
+The web flow is covered by offline tests (`tests/test_serve.py`) that drive
+the real Flask app with the ISE calls mocked.
+
 ### Self-contained report for hands-off customers
 
 If a customer won't run scripts, install Python, or expose their API, split

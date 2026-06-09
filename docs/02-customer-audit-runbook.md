@@ -162,6 +162,29 @@ ISE_VERIFY_SSL=false                 # set to true if your PAN has a public-CA c
 
 ## 6. Run the audit
 
+### Option A — browser form (easiest, no CLI knowledge needed)
+
+```bash
+cd python
+uv run --extra web python -m scripts.serve
+```
+
+Your browser opens `http://127.0.0.1:8765` with a simple form. Enter the PAN
+host, port, the read-only ERS account from step 2, leave "Verify TLS" off if
+your ISE uses a self-signed admin certificate, and click **Run Audit**. The
+report appears in the browser after 20–60 seconds, with **Download JSON** /
+**Download HTML** buttons in the toolbar and Print → Save-as-PDF for a PDF
+copy.
+
+Notes:
+- The page is served from your own machine (`127.0.0.1` only) — nothing is
+  exposed on the network and nothing leaves this machine.
+- Credentials are used once to read ISE and are never stored or logged.
+- A wrong host or password fails within seconds with a plain-English message.
+- Stop the server with `Ctrl+C` when you're done.
+
+### Option B — command line
+
 ```bash
 cd python
 uv run python -m scripts.audit_deep --pdf --app
