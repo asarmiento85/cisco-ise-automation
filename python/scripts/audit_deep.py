@@ -66,6 +66,18 @@ def render_html(data: dict, findings: list[dict], summary: dict, recommendations
         pan_hostname=data.get("pan_hostname", "-"),
         patches=data.get("patches", []),
         license_smart=data.get("license_smart", {}),
+        # migration / security / operational additions
+        allowed_protocols=data.get("allowed_protocols", []),
+        ers_nodes=data.get("ers_nodes", []),
+        security_settings=data.get("security_settings"),
+        admin_password_policy=data.get("admin_password_policy"),
+        admin_session_settings=data.get("admin_session_settings"),
+        fips_status=data.get("fips_status"),
+        logging_targets=data.get("logging_targets"),
+        posture_settings=data.get("posture_settings"),
+        pxgrid_settings=data.get("pxgrid_settings"),
+        profiler_feed=data.get("profiler_feed"),
+        radius_sequences=data.get("radius_sequences", []),
     )
 
 

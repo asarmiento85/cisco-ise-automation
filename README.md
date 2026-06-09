@@ -138,10 +138,13 @@ ok: [ubuntu-server] => {
 
 ## Auditing an existing deployment
 
-For consulting engagements, drift checks, or quarterly health reviews against
-an already-deployed ISE, run the read-only audit. It pulls 52 ERS / OpenAPI
-endpoints, derives heuristic findings, maps them to a remediation catalog
-with priority / effort / risk, and renders a report.
+For consulting engagements, drift checks, post-migration reviews, or quarterly
+health reviews against an already-deployed ISE, run the read-only audit. It
+pulls 60+ ERS / OpenAPI endpoints, derives heuristic findings, maps them to a
+remediation catalog with priority / effort / risk, and renders a report. The
+analyzer is tuned for the kinds of issues that survive a version migration
+unchanged (weak auth methods, broken cert chains, stale references, mixed node
+versions).
 
 ```bash
 cd python
@@ -168,19 +171,32 @@ Admin. Source IP allowlisting in ISE's API access settings is recommended.
 
 | Category | Examples |
 |---|---|
-| Certificates | expired / near-expiry system certs, SHA-1 signatures, self-signed in prod, expiring trusted-store certs |
+| Certificates | expired / near-expiry system certs, SHA-1 signatures, self-signed in prod, expiring trusted-store certs, **broken trust chains** |
+| Weak auth methods | **PAP / CHAP / MS-CHAPv1 / EAP-MD5 / LEAP enabled**, EAP-FAST anonymous PAC provisioning, TLS 1.0/1.1 for EAP-TLS |
+| Node health | **mixed software versions across nodes**, replication / sync not healthy |
 | NAD inventory | NADs with no IP, duplicate IPs, missing Location / Device Type NDGs, non-default CoA port |
-| Admin access | default `admin` enabled, Super Admin sprawl |
+| Admin access | default `admin` enabled, Super Admin sprawl, weak password policy, long session timeout |
+| Security settings | TLS 1.0/1.1 allowed, SHA-1 ciphers, FIPS posture vs compliance |
 | Backups | missing repo, FTP-based repo, no scheduled backup |
+| Logging | no remote syslog / SIEM target |
 | Policy | PermitAccess catch-all rules, unused authz profiles |
 | Device admin | per-command TACACS+ authz (lockout failure mode if TACACS becomes unreachable) |
+| Stale references | external RADIUS / repos / logging targets pointing at decommissioned hosts |
 | TrustSec | SGTs defined without egress matrix enforcement |
+| Profiler / pxGrid | feed auto-update disabled, pxGrid auto-approve enabled |
+| Endpoints | high ratio in the "Unknown" group (profiling gaps / stale migration data) |
+| Cleanup | leftover default / sample artifacts |
 
 Each finding is keyed to a recommendation in
-`ise_api/recommendations.py:REC_CATALOG` with rationale, GUI/CLI steps,
-effort estimate, and operational risk. Plus four always-on operational
+`ise_api/recommendations.py:REC_CATALOG` (30+ entries) with rationale, GUI/CLI
+steps, effort estimate, and operational risk. Plus four always-on operational
 hygiene recommendations (`REC-OPS-*`) covering audit cadence, break-glass
-procedure, PSIRT subscription, and patch latency review.
+procedure, PSIRT subscription, and patch latency review. Where a setting isn't
+exposed by the API on a given ISE version, the report flags it for manual
+verification rather than silently omitting it.
+
+The analyzer is covered by offline tests (`tests/test_audit_analyzer.py`) that
+need no live ISE — run `make test`.
 
 ### Customer-friendly delivery options
 
@@ -195,7 +211,10 @@ tier that matches their comfort level:
 
 For Tier C, hand the customer this repo, have them create the read-only
 ERS account, run `audit_deep.py --json-only` themselves, and email you the
-JSON. You never touch their API.
+JSON. You never touch their API. A full customer-facing, step-by-step runbook
+(enable ERS, create the scoped account, install, run, review, clean up,
+troubleshooting, security FAQ) is in
+[`docs/02-customer-audit-runbook.md`](docs/02-customer-audit-runbook.md).
 
 ## Security notes
 

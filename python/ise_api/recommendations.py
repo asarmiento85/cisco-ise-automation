@@ -369,6 +369,258 @@ REC_CATALOG: dict[str, dict[str, Any]] = {
             "Consider migrating real users to AD/LDAP instead of internal store.",
         ],
     },
+
+    # -------------------- MIGRATION-CRITICAL --------------------
+    "REC-AUTH-001": {
+        "title": "Disable deprecated authentication methods carried over by migration",
+        "category": "Weak auth methods",
+        "priority": "P1",
+        "effort": "1–2 hours + supplicant verification",
+        "risk": "Medium — confirm no live clients depend on the weak method first",
+        "rationale": (
+            "Legacy methods — PAP, CHAP, MS-CHAPv1, EAP-MD5, LEAP, and EAP-FAST anonymous PAC "
+            "provisioning — are cryptographically weak or unauthenticated, and are trivially "
+            "downgraded or cracked. ISE migrations copy the Allowed Protocols definitions verbatim, "
+            "so a deployment that enabled these years ago still has them enabled today. Most "
+            "environments have long since moved every real client to PEAP/EAP-TLS and no longer "
+            "need them — but nobody turned them off."
+        ),
+        "steps": [
+            "For each flagged Allowed Protocols set: Policy → Policy Elements → Results → Authentication → Allowed Protocols.",
+            "Before disabling: run Operations → RADIUS → Live Logs filtered on the weak method to confirm no live clients still use it.",
+            "Disable PAP/ASCII, CHAP, MS-CHAPv1, EAP-MD5, LEAP unless a documented device class genuinely requires one.",
+            "For EAP-FAST, disable anonymous in-band PAC provisioning; require authenticated provisioning.",
+            "Re-test a representative client of each platform after the change.",
+        ],
+    },
+    "REC-TLS-001": {
+        "title": "Disable TLS 1.0/1.1 and SHA-1 ciphers",
+        "category": "Security settings",
+        "priority": "P1",
+        "effort": "30–60 min",
+        "risk": "Medium — very old endpoints/browsers may lose access",
+        "rationale": (
+            "TLS 1.0 and 1.1 are deprecated (RFC 8996) and SHA-1 ciphers are broken. Old ISE "
+            "deployments commonly left them enabled for legacy supplicant compatibility, and the "
+            "setting migrates forward. They weaken EAP-TLS, admin HTTPS, and portal TLS."
+        ),
+        "steps": [
+            "Administration → System → Settings → Security Settings.",
+            "Set the minimum TLS version to 1.2 (1.3 where supported) for both EAP and admin/portal.",
+            "Disallow SHA-1 cipher suites.",
+            "For EAP-TLS specifically, check the Allowed Protocols TLS-version setting too.",
+            "Identify any endpoint still requiring TLS 1.0/1.1 (Live Logs) and remediate the endpoint, not ISE.",
+        ],
+    },
+    "REC-NODE-001": {
+        "title": "Resolve node replication / sync state",
+        "category": "Node health",
+        "priority": "P1",
+        "effort": "Variable — may need TAC",
+        "risk": "High — a desynced node serves stale policy",
+        "rationale": (
+            "A node not in a healthy replication state serves stale configuration to the endpoints "
+            "it authenticates. Right after a migration this is a common transient that sometimes "
+            "doesn't self-heal."
+        ),
+        "steps": [
+            "Administration → System → Deployment → select the node → check Replication Status.",
+            "Try a manual Syncup from the PAN.",
+            "If it won't converge, deregister + re-register the node (maintenance window).",
+            "Escalate to Cisco TAC if replication errors persist.",
+        ],
+    },
+    "REC-NODE-002": {
+        "title": "Bring all nodes to a single software version + patch level",
+        "category": "Node health",
+        "priority": "P1",
+        "effort": "Patch window per node",
+        "risk": "High — mixed versions are unsupported",
+        "rationale": (
+            "ISE does not support running mixed software/patch versions across a deployment beyond a "
+            "brief upgrade window. Mixed versions cause replication failures and unpredictable policy "
+            "evaluation. Post-migration this happens when one node's patch didn't apply."
+        ),
+        "steps": [
+            "Administration → System → Maintenance → Patch Management — compare patch level across nodes.",
+            "Apply the missing patch to the lagging node(s), PSNs first then secondary PAN then primary PAN.",
+            "Confirm all nodes report identical version + patch.",
+        ],
+    },
+    "REC-CERT-005": {
+        "title": "Repair broken certificate trust chains",
+        "category": "Certificates",
+        "priority": "P1",
+        "effort": "30 min per chain",
+        "risk": "Medium — chain gaps cause intermittent auth failures",
+        "rationale": (
+            "A system certificate whose issuing CA is not present in the Trusted Certificates store "
+            "produces an incomplete chain. Clients that strictly validate the chain (EAP-TLS, LDAPS, "
+            "SAML) fail intermittently. Migrations frequently bring the leaf cert across but miss the "
+            "intermediate/root."
+        ),
+        "steps": [
+            "Identify the issuing CA of the flagged system cert (issuer field).",
+            "Obtain the full chain (root + intermediates) from your PKI.",
+            "Administration → System → Certificates → Trusted Certificates → Import the missing CA cert(s).",
+            "Mark them trusted for the relevant purposes (Auth for EAP, ISE infrastructure, etc.).",
+            "Re-test an EAP-TLS client to confirm the chain now validates.",
+        ],
+    },
+    "REC-STALE-001": {
+        "title": "Verify external references still point at live infrastructure",
+        "category": "Stale references",
+        "priority": "P2",
+        "effort": "1–2 hours",
+        "risk": "Low to verify; high if a dead target is in an active path",
+        "rationale": (
+            "External RADIUS servers, backup repositories, logging targets, and RADIUS server "
+            "sequences all reference remote hosts by IP/name. After a migration (or a data-center "
+            "move) some of these point at decommissioned hosts. A dead target in an active "
+            "authentication or logging path causes timeouts and silent data loss."
+        ),
+        "steps": [
+            "For each flagged reference, confirm the destination host still exists and is reachable from ISE.",
+            "Remove or update references to retired infrastructure.",
+            "For external RADIUS proxy targets, test an end-to-end auth through the sequence.",
+            "For repositories, run a manual backup to validate.",
+        ],
+    },
+    "REC-CLEANUP-001": {
+        "title": "Remove leftover default / sample artifacts",
+        "category": "Cleanup",
+        "priority": "P3",
+        "effort": "15–30 min",
+        "risk": "Very low",
+        "rationale": (
+            "Default and sample objects (sample sponsor groups, unused default policy sets) clutter "
+            "the config and occasionally shadow real intent. They ride through migrations untouched."
+        ),
+        "steps": [
+            "Confirm each flagged object is genuinely unused (not referenced by any active policy).",
+            "Delete sample sponsor groups and unused default policy sets.",
+            "Keep one documented catch-all if your design relies on it.",
+        ],
+    },
+
+    # -------------------- SECURITY HARDENING --------------------
+    "REC-FIPS-001": {
+        "title": "Confirm FIPS posture matches compliance requirements",
+        "category": "Security settings",
+        "priority": "P3",
+        "effort": "Planning + maintenance window if enabling",
+        "risk": "High to enable — FIPS restricts algorithms deployment-wide",
+        "rationale": (
+            "FIPS mode is off by default and most deployments are fine that way. Only flag this if the "
+            "customer operates under FedRAMP / FISMA / similar mandates that require FIPS-validated "
+            "crypto. Enabling FIPS disables non-compliant algorithms across the deployment and is a "
+            "significant change."
+        ),
+        "steps": [
+            "Confirm whether a compliance mandate actually requires FIPS.",
+            "If yes: plan carefully — FIPS forces certificate, protocol, and password changes.",
+            "Enable under Administration → System → Settings → FIPS Mode in a maintenance window.",
+        ],
+    },
+    "REC-ADMIN-003": {
+        "title": "Strengthen the admin password policy",
+        "category": "Admin access",
+        "priority": "P2",
+        "effort": "15 min",
+        "risk": "Low",
+        "rationale": (
+            "A short admin password minimum is a weak link for the identity plane's own management. "
+            "Recommend ≥12–14 chars with complexity, history, and rotation."
+        ),
+        "steps": [
+            "Administration → System → Admin Access → Authentication → Password Policy.",
+            "Set minimum length ≥12 (14 preferred), enable complexity + history.",
+            "Set a rotation interval consistent with org policy.",
+        ],
+    },
+    "REC-ADMIN-004": {
+        "title": "Tighten admin GUI session timeout",
+        "category": "Admin access",
+        "priority": "P3",
+        "effort": "5 min",
+        "risk": "Very low",
+        "rationale": (
+            "A long idle session timeout leaves authenticated admin sessions open on unattended "
+            "workstations."
+        ),
+        "steps": [
+            "Administration → System → Admin Access → Settings → Session.",
+            "Set idle timeout to ≤30–60 min per policy.",
+        ],
+    },
+    "REC-LOG-001": {
+        "title": "Configure a remote logging (syslog) target",
+        "category": "Logging",
+        "priority": "P2",
+        "effort": "30 min",
+        "risk": "Low",
+        "rationale": (
+            "Without a remote syslog/SIEM target, security and audit events live only in the MnT "
+            "database and age out per retention. A migration sometimes drops the old syslog target. "
+            "Forwarding to a SIEM is essential for incident response and tamper-evidence."
+        ),
+        "steps": [
+            "Administration → System → Logging → Remote Logging Targets → Add (your SIEM/syslog collector).",
+            "Administration → System → Logging → Logging Categories → map AAA, admin, and posture categories to the target.",
+            "Confirm events arrive at the SIEM.",
+        ],
+    },
+
+    # -------------------- OPERATIONAL DEPTH --------------------
+    "REC-PROFILER-002": {
+        "title": "Enable the profiler feed auto-update",
+        "category": "Profiler",
+        "priority": "P3",
+        "effort": "15 min",
+        "risk": "Low",
+        "rationale": (
+            "With the feed disabled, new device fingerprints never arrive and endpoint classification "
+            "degrades over time — more endpoints land in 'Unknown'. The setting is sometimes left off "
+            "after a migration."
+        ),
+        "steps": [
+            "Administration → System → Settings → Profiling, and Work Centers → Profiler → Feeds.",
+            "Enable automatic feed updates from Cisco; set a schedule.",
+            "Verify the last-update timestamp advances.",
+        ],
+    },
+    "REC-PXGRID-001": {
+        "title": "Disable pxGrid client auto-approve",
+        "category": "pxGrid",
+        "priority": "P2",
+        "effort": "10 min",
+        "risk": "Low",
+        "rationale": (
+            "pxGrid auto-approve lets any client that requests it register and subscribe to the "
+            "context bus without manual vetting. Approve clients explicitly instead."
+        ),
+        "steps": [
+            "Administration → pxGrid Services → Settings → uncheck automatic approval.",
+            "Review currently registered clients; revoke any unrecognized ones.",
+        ],
+    },
+    "REC-ENDPOINT-001": {
+        "title": "Investigate high 'Unknown' endpoint ratio",
+        "category": "Endpoints",
+        "priority": "P3",
+        "effort": "Variable",
+        "risk": "Low",
+        "rationale": (
+            "A large share of endpoints in the Unknown group means profiling isn't classifying them — "
+            "missing probes (DHCP/SNMP/RADIUS), a disabled feed, or stale endpoint records carried "
+            "through the migration."
+        ),
+        "steps": [
+            "Confirm profiling probes are enabled on PSNs (RADIUS, DHCP, SNMP, HTTP).",
+            "Enable the profiler feed (see REC-PROFILER-002).",
+            "Purge stale endpoints via Administration → Identity Management → Settings → Endpoint Purge.",
+        ],
+    },
 }
 
 # Always-emitted operational hygiene recommendations — apply regardless of findings.

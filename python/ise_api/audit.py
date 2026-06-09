@@ -87,6 +87,21 @@ def _ers_list(c: ISEClient, resource: str) -> list[dict]:
     return list(c.ers_paginate(resource))
 
 
+def _ers_count(c: ISEClient, resource: str, filter_q: str | None = None) -> int:
+    """Cheap total-count from an ERS collection without pulling every record.
+
+    ERS SearchResult includes a 'total' field. We request size=1 to keep the
+    payload tiny — useful for large tables like endpoints where we want the
+    count but never the MAC addresses.
+    """
+    params: dict[str, Any] = {"size": 1}
+    if filter_q:
+        params["filter"] = filter_q
+    r = c.get(f"/ers/config/{resource}", params=params)
+    r.raise_for_status()
+    return int(r.json().get("SearchResult", {}).get("total", 0))
+
+
 def _ers_detail(c: ISEClient, resource: str, items: list[dict]) -> list[dict]:
     out: list[dict] = []
     for item in items:
@@ -159,7 +174,9 @@ def collect(c: ISEClient) -> dict[str, Any]:
     data["external_radius"] = _try(lambda: _ers_list(c, "externalradiusserver"), coverage, "identity.external_radius") or []
 
     # --- policy: network access ---
-    data["allowed_protocols"] = _try(lambda: _ers_list(c, "allowedprotocols"), coverage, "policy.allowed_protocols") or []
+    ap_summary = _try(lambda: _ers_list(c, "allowedprotocols"), coverage, "policy.allowed_protocols") or []
+    # Pull detail so we can inspect which EAP / legacy methods are enabled.
+    data["allowed_protocols"] = _try(lambda: _ers_detail(c, "allowedprotocols", ap_summary), coverage, "policy.allowed_protocols_detail") or ap_summary
     data["authz_profiles_summary"] = _try(lambda: _ers_list(c, "authorizationprofile"), coverage, "policy.authz_profiles") or []
     data["authz_profiles"] = _try(lambda: _ers_detail(c, "authorizationprofile", data["authz_profiles_summary"]), coverage, "policy.authz_profiles_detail") or data["authz_profiles_summary"]
     data["dacls"] = _try(lambda: _ers_list(c, "downloadableacl"), coverage, "policy.dacls") or []
@@ -213,6 +230,40 @@ def collect(c: ISEClient) -> dict[str, Any]:
     data["pan_hostname"] = node_host
     data["system_certs"] = _try(lambda: _openapi_get(c, f"/api/v1/certs/system-certificate/{node_host}"), coverage, "certs.system") or []
     data["trusted_certs"] = _try(lambda: _openapi_get(c, "/api/v1/certs/trusted-certificate"), coverage, "certs.trusted") or []
+
+    # --- per-node detail (version / patch / replication consistency) ---
+    # ERS 'node' gives per-node version + replication role; OpenAPI deployment/node
+    # gives persona/status. We pull both and reconcile in the analyzer.
+    data["ers_nodes"] = _try(lambda: _ers_list(c, "node"), coverage, "deployment.ers_nodes") or []
+
+    # --- RADIUS server sequences ---
+    data["radius_sequences"] = _try(lambda: _ers_list(c, "radiusserversequence"), coverage, "identity.radius_sequences") or []
+
+    # --- endpoint DB stats (count only; we never pull endpoint records / MACs) ---
+    data["endpoint_count"] = _try(lambda: _ers_count(c, "endpoint"), coverage, "identity.endpoint_count")
+    data["unknown_endpoint_count"] = _try(
+        lambda: _ers_count(c, "endpoint", filter_q="groupId.EQ.aa0e8b20-8bff-11e6-996c-525400b48521"),
+        coverage, "identity.unknown_endpoint_count",
+    )
+
+    # --- security settings (best-effort; routes vary by version) ---
+    data["security_settings"] = _try(lambda: _openapi_get(c, "/api/v1/system-settings/security"), coverage, "security.settings")
+    data["admin_password_policy"] = _try(lambda: _openapi_get(c, "/api/v1/system-settings/admin-access/authentication/password-policy"), coverage, "security.admin_password_policy")
+    data["admin_session_settings"] = _try(lambda: _openapi_get(c, "/api/v1/system-settings/admin-access/session/timeout"), coverage, "security.admin_session")
+    data["fips_status"] = _try(lambda: _openapi_get(c, "/api/v1/system-settings/fips"), coverage, "security.fips")
+
+    # --- logging targets / data retention (best-effort) ---
+    data["logging_targets"] = _try(lambda: _openapi_get(c, "/api/v1/system-settings/logging/remote-logging-target"), coverage, "logging.remote_targets")
+    data["mnt_retention"] = _try(lambda: _openapi_get(c, "/api/v1/system-settings/data-retention"), coverage, "logging.data_retention")
+
+    # --- posture / client provisioning feed (best-effort) ---
+    data["posture_settings"] = _try(lambda: _openapi_get(c, "/api/v1/posture/global-setting"), coverage, "posture.global_settings")
+
+    # --- pxGrid (best-effort) ---
+    data["pxgrid_settings"] = _try(lambda: _openapi_get(c, "/api/v1/pxgrid/settings"), coverage, "pxgrid.settings")
+
+    # --- profiler feed service (best-effort) ---
+    data["profiler_feed"] = _try(lambda: _openapi_get(c, "/api/v1/profiler/profiler-feed-status"), coverage, "profiler.feed_status")
 
     # Scrub credential fields the ERS API returns in plaintext.
     # Coverage map is metadata-only, so leave it alone.
@@ -377,6 +428,160 @@ def analyze(data: dict[str, Any]) -> list[dict]:
     if must_change:
         f.append(_finding("low", "Identity", f"{must_change} internal users flagged 'must change password'.", "internal_users", "REC-IDENTITY-001"))
 
+    # =====================================================================
+    # MIGRATION-CRITICAL CHECKS
+    # =====================================================================
+
+    # --- weak / deprecated authentication methods in Allowed Protocols ---
+    # These flags are exactly what migrates forward unchanged from old ISE.
+    _WEAK_METHODS = {
+        "allowPapAscii": ("PAP/ASCII", "med"),
+        "allowChap": ("CHAP", "med"),
+        "allowMsChapV1": ("MS-CHAPv1", "high"),
+        "allowEapMd5": ("EAP-MD5", "high"),
+        "allowLeap": ("LEAP", "high"),
+        "allowPreferredEapProtocol": (None, None),  # not weak; ignore
+    }
+    for ap in data.get("allowed_protocols", []):
+        ap_name = ap.get("name", "?")
+        enabled_weak = []
+        for flag, (label, sev) in _WEAK_METHODS.items():
+            if label and ap.get(flag) is True:
+                enabled_weak.append((label, sev))
+        if enabled_weak:
+            worst = "high" if any(s == "high" for _, s in enabled_weak) else "med"
+            labels = ", ".join(sorted(lbl for lbl, _ in enabled_weak))
+            f.append(_finding(worst, "Weak auth methods", f"Allowed Protocols '{ap_name}' permits deprecated method(s): {labels}. Common migration carryover.", "allowed_protocols", "REC-AUTH-001"))
+        # EAP-FAST anonymous PAC provisioning is another legacy carryover
+        eapfast = ap.get("eapFast") or {}
+        if isinstance(eapfast, dict) and eapfast.get("allowEapFast") and eapfast.get("eapFastAllowAnonymProvisioning"):
+            f.append(_finding("med", "Weak auth methods", f"Allowed Protocols '{ap_name}' allows EAP-FAST anonymous PAC provisioning (unauthenticated). Review post-migration.", "allowed_protocols", "REC-AUTH-001"))
+        # TLS 1.0 / 1.1 for EAP-TLS
+        eaptls = ap.get("eapTls") or {}
+        if isinstance(eaptls, dict):
+            tls_versions = eaptls.get("allowedTlsVersions") or eaptls.get("eapTlsAllowTlsVersions")
+            if tls_versions and any(v in str(tls_versions) for v in ("1.0", "1.1", "TLSV1_0", "TLSV1_1")):
+                f.append(_finding("high", "Weak auth methods", f"Allowed Protocols '{ap_name}' permits TLS 1.0/1.1 for EAP-TLS.", "allowed_protocols", "REC-TLS-001"))
+
+    # --- node version / replication consistency (post-migration) ---
+    node_versions = set()
+    for n in data.get("ers_nodes", []):
+        ver = n.get("nodeServiceTypes") and None  # placeholder; version field varies
+        ver = n.get("softwareVersion") or n.get("version") or n.get("patchVersion")
+        if ver:
+            node_versions.add(str(ver))
+        repl = (n.get("replicationStatus") or n.get("nodeStatus") or "").upper()
+        if repl and repl not in ("CONNECTED", "REPLICATION_OK", "SYNC_COMPLETED", "ACTIVE"):
+            f.append(_finding("high", "Node health", f"Node '{n.get('hostName') or n.get('name')}' replication/status = '{repl}' — verify sync after migration.", "ers_nodes", "REC-NODE-001"))
+    if len(node_versions) > 1:
+        f.append(_finding("high", "Node health", f"Nodes report MIXED software versions: {', '.join(sorted(node_versions))}. All nodes must match after migration.", "ers_nodes", "REC-NODE-002"))
+
+    # --- broken certificate chain heuristic ---
+    trusted_subjects = []
+    for tc in data.get("trusted_certs", []):
+        subj = (tc.get("subject") or tc.get("friendlyName") or "")
+        trusted_subjects.append(str(subj))
+    trusted_blob = " | ".join(trusted_subjects)
+    for cert in data.get("system_certs", []):
+        if cert.get("selfSigned"):
+            continue
+        issuer = (cert.get("issuedBy") or cert.get("issuer") or "").strip()
+        name = (cert.get("friendlyName") or "").strip()
+        if issuer:
+            # crude CN extraction
+            cn = issuer
+            if "CN=" in issuer:
+                cn = issuer.split("CN=", 1)[1].split(",")[0].strip()
+            if cn and cn not in trusted_blob:
+                f.append(_finding("med", "Certificates", f"System cert '{name}' issuer '{cn}' not found in Trusted Certificates store — possible broken chain post-migration.", "system_certs", "REC-CERT-005"))
+
+    # --- stale external references (servers / repos pointing at old infra) ---
+    stale_targets = []
+    for s in data.get("external_radius", []):
+        stale_targets.append(("External RADIUS", s.get("name"), s.get("hostIP") or s.get("ipaddress")))
+    for r in data.get("repositories", []):
+        stale_targets.append(("Repository", r.get("name"), r.get("serverName")))
+    for lt in (data.get("logging_targets") or []):
+        if isinstance(lt, dict):
+            stale_targets.append(("Logging target", lt.get("name"), lt.get("host") or lt.get("ipAddress")))
+    if stale_targets:
+        listed = "; ".join(f"{t}:{n}->{h}" for t, n, h in stale_targets[:6])
+        more = "…" if len(stale_targets) > 6 else ""
+        f.append(_finding("info", "Stale references", f"{len(stale_targets)} external target(s) reference remote hosts — verify each still exists post-migration: {listed}{more}", "external_radius", "REC-STALE-001"))
+
+    # --- leftover default / sample artifacts ---
+    leftovers = []
+    for ps in data.get("policy_sets", []):
+        nm = (ps.get("name") or "")
+        if nm.strip().lower() in ("default", "sample", "wired", "wireless") and ps.get("isDefault"):
+            leftovers.append(f"policy set '{nm}'")
+    for sg in data.get("sponsor_groups", []):
+        nm = (sg.get("name") or "")
+        if "sample" in nm.lower() or nm in ("ALL_ACCOUNTS", "GROUP_ACCOUNTS", "OWN_ACCOUNTS"):
+            leftovers.append(f"sponsor group '{nm}'")
+    if leftovers:
+        f.append(_finding("low", "Cleanup", f"{len(leftovers)} default/sample artifact(s) present — confirm intended post-migration: {', '.join(leftovers[:6])}{'…' if len(leftovers)>6 else ''}.", "policy_sets", "REC-CLEANUP-001"))
+
+    # =====================================================================
+    # SECURITY HARDENING CHECKS
+    # =====================================================================
+
+    # --- TLS / cipher posture (best-effort; route may not exist) ---
+    ss = data.get("security_settings")
+    if isinstance(ss, dict) and ss:
+        allowed_tls = str(ss.get("allowedTLSVersions") or ss.get("tlsVersions") or "")
+        if any(v in allowed_tls for v in ("1.0", "1.1", "TLSV1_0", "TLSV1_1")):
+            f.append(_finding("high", "Security settings", f"Admin/EAP TLS settings permit TLS 1.0/1.1: '{allowed_tls}'.", "security_settings", "REC-TLS-001"))
+        if ss.get("allowSHA1Ciphers") or ss.get("allowSha1Ciphers"):
+            f.append(_finding("med", "Security settings", "SHA-1 cipher suites are allowed.", "security_settings", "REC-TLS-001"))
+    fips = data.get("fips_status")
+    if isinstance(fips, dict) and fips.get("isEnabled") is False:
+        f.append(_finding("info", "Security settings", "FIPS mode is disabled (expected for most deployments; flag only if compliance requires it).", "fips_status", "REC-FIPS-001"))
+
+    # --- admin password policy ---
+    pp = data.get("admin_password_policy")
+    if isinstance(pp, dict) and pp:
+        min_len = pp.get("minLength") or pp.get("minimumLength")
+        if isinstance(min_len, int) and min_len < 12:
+            f.append(_finding("med", "Admin access", f"Admin password minimum length is {min_len} (recommend ≥12-14).", "admin_password_policy", "REC-ADMIN-003"))
+    sess = data.get("admin_session_settings")
+    if isinstance(sess, dict) and sess:
+        timeout = sess.get("sessionTimeout") or sess.get("timeout")
+        if isinstance(timeout, int) and timeout > 60:
+            f.append(_finding("low", "Admin access", f"Admin GUI session timeout is {timeout} min (recommend ≤30-60).", "admin_session_settings", "REC-ADMIN-004"))
+
+    # --- logging / retention ---
+    lt = data.get("logging_targets")
+    if isinstance(lt, list) and not lt and "logging.remote_targets" in data.get("coverage", {}) and data["coverage"]["logging.remote_targets"].get("ok"):
+        f.append(_finding("med", "Logging", "No remote logging (syslog) target configured — security events stay only on MnT.", "logging_targets", "REC-LOG-001"))
+
+    # =====================================================================
+    # OPERATIONAL DEPTH CHECKS
+    # =====================================================================
+
+    # --- profiler feed freshness ---
+    pf = data.get("profiler_feed")
+    if isinstance(pf, dict) and pf:
+        if pf.get("isEnabled") is False or pf.get("enabled") is False:
+            f.append(_finding("low", "Profiler", "Profiler feed auto-update is disabled — endpoint classification will drift over time.", "profiler_feed", "REC-PROFILER-002"))
+
+    # --- pxGrid ---
+    px = data.get("pxgrid_settings")
+    if isinstance(px, dict) and px and px.get("autoApprove") is True:
+        f.append(_finding("med", "pxGrid", "pxGrid auto-approve is enabled — any client can register without manual approval.", "pxgrid_settings", "REC-PXGRID-001"))
+
+    # --- endpoint DB stats ---
+    ep = data.get("endpoint_count")
+    unk = data.get("unknown_endpoint_count")
+    if isinstance(ep, int) and isinstance(unk, int) and ep > 0:
+        pct = int(100 * unk / ep)
+        if pct > 25:
+            f.append(_finding("low", "Endpoints", f"{unk}/{ep} endpoints ({pct}%) are in the Unknown group — profiling gaps or stale data carried through migration.", "unknown_endpoint_count", "REC-ENDPOINT-001"))
+
+    # --- RADIUS server sequences pointing at external proxies ---
+    if data.get("radius_sequences"):
+        f.append(_finding("info", "Identity", f"{len(data['radius_sequences'])} RADIUS server sequence(s) present — confirm external proxy targets still valid post-migration.", "radius_sequences", "REC-STALE-001"))
+
     # sort severity
     order = {s: i for i, s in enumerate(_SEVERITIES)}
     f.sort(key=lambda x: (order.get(x["severity"], 99), x["category"]))
@@ -416,6 +621,10 @@ def summarize(data: dict[str, Any], findings: list[dict]) -> dict[str, Any]:
             "repositories": len(data.get("repositories", [])),
             "system_certs": len(data.get("system_certs", [])),
             "trusted_certs": len(data.get("trusted_certs", [])),
+            "allowed_protocols": len(data.get("allowed_protocols", [])),
+            "radius_sequences": len(data.get("radius_sequences", [])),
+            "endpoint_count": data.get("endpoint_count") if isinstance(data.get("endpoint_count"), int) else "n/a",
+            "unknown_endpoint_count": data.get("unknown_endpoint_count") if isinstance(data.get("unknown_endpoint_count"), int) else "n/a",
         },
         "severity": sev,
         "endpoint_coverage": {"ok": ok, "total": total, "pct": int(100 * ok / total) if total else 0},

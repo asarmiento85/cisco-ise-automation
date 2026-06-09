@@ -495,7 +495,73 @@
 <p class="small muted">Schedule config keys: {{ backup_schedule_config.keys()|list }}</p>
 {% endif %}
 
-<h2>15. Endpoint coverage matrix</h2>
+<h2>15. Authentication protocols &amp; methods</h2>
+<p class="small muted">Per Allowed Protocols set, which methods are enabled. <span class="pill sev-high">weak</span> markers indicate deprecated methods that frequently survive a version migration unchanged.</p>
+{% if allowed_protocols %}
+<table>
+  <thead><tr><th>Allowed Protocols set</th><th>Enabled methods</th></tr></thead>
+  <tbody>
+  {% for ap in allowed_protocols %}
+    <tr>
+      <td class="mono small">{{ ap.name }}</td>
+      <td class="small">
+        {% set weakmap = {'allowPapAscii': 'PAP', 'allowChap': 'CHAP', 'allowMsChapV1': 'MS-CHAPv1', 'allowEapMd5': 'EAP-MD5', 'allowLeap': 'LEAP'} %}
+        {% set strongmap = {'allowMsChapV2': 'MS-CHAPv2', 'allowPeap': 'PEAP', 'allowEapTls': 'EAP-TLS', 'allowEapTtls': 'EAP-TTLS', 'allowTeap': 'TEAP'} %}
+        {% for k, label in strongmap.items() %}
+          {% if ap.get(k) %}<span class="tag">{{ label }}</span>{% endif %}
+        {% endfor %}
+        {% if ap.eapFast and ap.eapFast.allowEapFast %}<span class="tag">EAP-FAST</span>{% endif %}
+        {% for k, label in weakmap.items() %}
+          {% if ap.get(k) %}<span class="tag" style="background:#fee2e2;color:#dc2626;">{{ label }} ⚠</span>{% endif %}
+        {% endfor %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">Allowed Protocols detail not available.</p>
+{% endif %}
+
+<h2>16. Security posture</h2>
+<table>
+  <tbody>
+    <tr><td class="small" style="width:40%">FIPS mode</td><td class="small mono">{% if fips_status is mapping %}{{ fips_status.get('isEnabled', fips_status) }}{% else %}<span class="muted">not exposed by API — verify in GUI</span>{% endif %}</td></tr>
+    <tr><td class="small">TLS / cipher settings</td><td class="small mono">{% if security_settings is mapping and security_settings %}{{ security_settings }}{% else %}<span class="muted">not exposed by API — verify Administration → System → Settings → Security Settings</span>{% endif %}</td></tr>
+    <tr><td class="small">Admin password policy</td><td class="small mono">{% if admin_password_policy is mapping and admin_password_policy %}min length: {{ admin_password_policy.get('minLength') or admin_password_policy.get('minimumLength') or '?' }}{% else %}<span class="muted">not exposed by API — verify in GUI</span>{% endif %}</td></tr>
+    <tr><td class="small">Admin session timeout</td><td class="small mono">{% if admin_session_settings is mapping and admin_session_settings %}{{ admin_session_settings.get('sessionTimeout') or admin_session_settings.get('timeout') or '?' }} min{% else %}<span class="muted">not exposed by API — verify in GUI</span>{% endif %}</td></tr>
+    <tr><td class="small">Remote logging targets</td><td class="small mono">{% if logging_targets %}{{ logging_targets|length }} configured{% elif logging_targets == [] %}<span style="color:#d97706;">none configured</span>{% else %}<span class="muted">not exposed by API — verify in GUI</span>{% endif %}</td></tr>
+  </tbody>
+</table>
+<p class="small muted">Rows marked "not exposed by API" couldn't be read via ERS/OpenAPI on this ISE version — the audit recommends verifying them manually in the admin UI. See the Recommendations section.</p>
+
+<h2>17. Node health &amp; operations</h2>
+{% if ers_nodes %}
+<h3>Nodes (version / replication)</h3>
+<table>
+  <thead><tr><th>Node</th><th>Version / patch</th><th>Replication / status</th></tr></thead>
+  <tbody>
+  {% for n in ers_nodes %}
+    <tr>
+      <td class="mono small">{{ n.hostName or n.name or '-' }}</td>
+      <td class="mono small">{{ n.softwareVersion or n.version or n.patchVersion or '-' }}</td>
+      <td class="small">{{ n.replicationStatus or n.nodeStatus or '-' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+<table>
+  <tbody>
+    <tr><td class="small" style="width:40%">Total endpoints in DB</td><td class="small mono">{{ summary.counts.endpoint_count }}</td></tr>
+    <tr><td class="small">Endpoints in "Unknown" group</td><td class="small mono">{{ summary.counts.unknown_endpoint_count }}</td></tr>
+    <tr><td class="small">RADIUS server sequences</td><td class="small mono">{{ summary.counts.radius_sequences }}</td></tr>
+    <tr><td class="small">Profiler feed auto-update</td><td class="small mono">{% if profiler_feed is mapping and profiler_feed %}{{ profiler_feed.get('isEnabled', profiler_feed.get('enabled', '?')) }}{% else %}<span class="muted">not exposed by API</span>{% endif %}</td></tr>
+    <tr><td class="small">pxGrid auto-approve</td><td class="small mono">{% if pxgrid_settings is mapping and pxgrid_settings %}{{ pxgrid_settings.get('autoApprove', '?') }}{% else %}<span class="muted">not exposed by API</span>{% endif %}</td></tr>
+  </tbody>
+</table>
+
+<h2>18. Endpoint coverage matrix</h2>
 <p class="small muted">Which audit endpoints responded successfully. Failed endpoints typically mean the feature is disabled, the persona doesn't expose it, or the patch level predates the OpenAPI route.</p>
 <table>
   <thead><tr><th>Endpoint</th><th>OK</th><th>Detail</th></tr></thead>
