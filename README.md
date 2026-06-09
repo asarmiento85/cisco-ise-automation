@@ -159,9 +159,38 @@ uv run python -m scripts.audit_deep --pdf
 # JSON only (smallest output; works without the [report] extra)
 uv run python -m scripts.audit_deep --json-only
 
+# Self-contained interactive app: writes index.html the customer just
+# double-clicks (offline, no server, severity filter + search + Print-to-PDF)
+uv run python -m scripts.audit_deep --app
+
 # Custom output dir (one per customer / engagement)
-uv run python -m scripts.audit_deep --pdf --out customer-acme-2026q2
+uv run python -m scripts.audit_deep --pdf --app --out customer-acme-2026q2
+
+# Render reports from a saved JSON dump — no ISE connection needed.
+# Lets you decouple "collect once" from "build the deliverable".
+uv run python -m scripts.audit_deep --from-json audit-output/audit-20260101-120000.json
 ```
+
+### Self-contained report for hands-off customers
+
+If a customer won't run scripts, install Python, or expose their API, split
+the two jobs: **collection** (the only step that touches ISE) runs once — on a
+screen-share with you, or via the packaged tool — and the **deliverable** is a
+single `index.html` they just double-click.
+
+`--app` produces that `index.html`: one file, ~70 KB, **no external requests**
+(all CSS/JS inline), works offline from `file://`. It's the full report plus an
+interactive shell — sticky section nav, severity filter chips, live search
+across findings and recommendations, collapsible recommendation cards, and a
+Print / Save-as-PDF button (uses the browser's own print, so no WeasyPrint
+needed on the customer side).
+
+> **Why not a website that talks to ISE directly?** A browser page (served or
+> opened from disk) **cannot** call the ISE ERS/OpenAPI directly: ISE sends no
+> CORS headers, its admin cert is usually self-signed, and a hosted SaaS can't
+> reach an internal PAN (nor should ISE admin creds go to a third party). So
+> the collection must run somewhere with network access + credentials — locally
+> — and the browser only ever renders already-collected, redacted data.
 
 All API calls are GETs — no state on the PAN is changed. The audit account
 should be ISE's `ERS Operator` role (read-only); it does not require Super

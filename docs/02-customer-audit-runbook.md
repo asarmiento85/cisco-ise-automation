@@ -164,8 +164,15 @@ ISE_VERIFY_SSL=false                 # set to true if your PAN has a public-CA c
 
 ```bash
 cd python
-uv run python -m scripts.audit_deep --pdf
+uv run python -m scripts.audit_deep --pdf --app
 ```
+
+The `--app` flag additionally writes a **self-contained `index.html`** — a
+single file you can open by double-clicking in any browser. It works fully
+offline (no server, no internet), and bundles an interactive view: filter by
+severity, search findings, jump between sections, and Save-as-PDF from the
+browser's print dialog. This is the easiest artifact to hand to someone who
+just wants to *look* at the results without installing anything.
 
 Expected output:
 
@@ -196,9 +203,14 @@ The audit drops three files in `python/audit-output/`:
 
 | File | What's in it | Send to consultant? |
 |---|---|---|
+| `index.html` | Self-contained interactive app — double-click to open, works offline | Optional — easiest to browse |
 | `audit-<ts>.pdf` | Print-ready 18-page report — the most readable | Yes — main deliverable |
-| `audit-<ts>.html` | Same content, browser-viewable | Optional |
+| `audit-<ts>.html` | Same content, static browser view | Optional |
 | `audit-<ts>.json` | Full structured dump — diffable across runs | Yes — required for offline analysis |
+
+> The `index.html` is a fixed point-in-time snapshot with the data baked in.
+> It does **not** connect to ISE when opened — it only renders data already
+> collected during the run above. Safe to email or drop on a share.
 
 ### What's in the files (and what isn't)
 
