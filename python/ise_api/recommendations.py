@@ -370,6 +370,31 @@ REC_CATALOG: dict[str, dict[str, Any]] = {
         ],
     },
 
+    # -------------------- API ACCESS --------------------
+    "REC-API-001": {
+        "title": "Enable the Open API service for full audit coverage",
+        "category": "API access",
+        "priority": "P1",
+        "effort": "5 min + re-run the audit",
+        "risk": "None — enabling the service changes no policy; RBAC still gates every request",
+        "rationale": (
+            "ISE has two API services: ERS (legacy, /ers/...) and Open API (/api/v1/...). When Open "
+            "API is disabled, its routes answer with an HTTP 302 redirect to the GUI login page, and "
+            "everything the audit reads through it — deployment nodes, policy sets, system/trusted "
+            "certificates, repositories, backup schedule, licensing, security settings — comes back "
+            "empty. The audit report is then partial, and 'missing' items in those sections cannot "
+            "be distinguished from unread ones."
+        ),
+        "steps": [
+            "Log in to the ISE admin GUI as a Super Admin.",
+            "Administration → System → Settings → API Settings → API Service Settings tab.",
+            "Enable 'Open API (Read/Write)' — the toggle enables the service; the audit account's read-only RBAC still applies to every call.",
+            "Save. The service activates within about a minute — no restart needed.",
+            "Confirm the audit account (or its AD group) is also mapped to an admin group with GUI read access (e.g. Read Only Admin) — ERS Operator alone does not authorize /api/v1 calls.",
+            "Re-run the audit and check the Endpoint Coverage Matrix — OpenAPI rows should now read OK.",
+        ],
+    },
+
     # -------------------- MIGRATION-CRITICAL --------------------
     "REC-AUTH-001": {
         "title": "Disable deprecated authentication methods carried over by migration",

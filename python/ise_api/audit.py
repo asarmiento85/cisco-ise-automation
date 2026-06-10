@@ -399,13 +399,40 @@ def analyze(data: dict[str, Any]) -> list[dict]:
         f.append(_finding("med", "Admin access", f"{super_count} Super Admin accounts — minimize membership.", "admin_users", "REC-ADMIN-002"))
 
     # --- backups ---
-    if not data.get("repositories"):
+    # Only assert "missing" when the endpoint actually answered — an API
+    # failure (e.g. Open API disabled → 302) is absence of evidence, not
+    # evidence of absence.
+    cov = data.get("coverage", {})
+
+    def _cov_ok(key: str) -> bool:
+        v = cov.get(key)
+        return isinstance(v, dict) and bool(v.get("ok"))
+
+    if data.get("repositories"):
+        if any((r.get("protocol") or "").upper() == "FTP" for r in data["repositories"]):
+            f.append(_finding("med", "Backups", "Backup repo uses FTP — switch to SFTP/HTTPS for credential & data integrity.", "repositories", "REC-BACKUP-002"))
+    elif _cov_ok("system.repositories"):
         f.append(_finding("high", "Backups", "No backup repository configured — DR posture broken.", "repositories", "REC-BACKUP-001"))
-    elif any((r.get("protocol") or "").upper() == "FTP" for r in data["repositories"]):
-        f.append(_finding("med", "Backups", "Backup repo uses FTP — switch to SFTP/HTTPS for credential & data integrity.", "repositories", "REC-BACKUP-002"))
     sched = data.get("backup_schedule_config") or {}
-    if isinstance(sched, dict) and not sched.get("scheduleOptions"):
+    if _cov_ok("system.backup.config_schedule") and isinstance(sched, dict) and not sched.get("scheduleOptions"):
         f.append(_finding("med", "Backups", "No scheduled configuration backup detected.", "backup_schedule_config", "REC-BACKUP-003"))
+
+    # --- API service availability (meta-finding) ---
+    # A burst of HTTP 302s on OpenAPI routes means the Open API service is
+    # disabled: those requests bounce to the GUI login page. Surface it as a
+    # finding so the operator knows the report is partial and how to fix it.
+    redirected = [
+        k for k, v in cov.items()
+        if isinstance(v, dict) and not v.get("ok") and str(v.get("status")) == "302"
+    ]
+    if len(redirected) >= 3:
+        f.append(_finding(
+            "high", "API access",
+            f"{len(redirected)} API endpoints redirected to the login page (HTTP 302) — the Open API "
+            f"service is disabled on this deployment, so deployment/policy-set/certificate/system "
+            f"sections of this report are missing. Enable it and re-run for full coverage.",
+            "coverage", "REC-API-001",
+        ))
 
     # --- policy ---
     used_authz_names: set[str] = set()

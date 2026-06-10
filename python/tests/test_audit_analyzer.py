@@ -115,6 +115,59 @@ def test_summary_counts_present(migrated_data: dict) -> None:
     assert s["severity"]["high"] >= 4
 
 
+def test_openapi_disabled_meta_finding() -> None:
+    """A burst of 302s on coverage = Open API disabled → REC-API-001 fires."""
+    data = {
+        "coverage": {
+            "deployment.nodes": {"ok": False, "status": 302},
+            "certs.system": {"ok": False, "status": 302},
+            "policy.network_access.sets": {"ok": False, "status": 302},
+            "system.repositories": {"ok": False, "status": 302},
+            "nads.list": {"ok": True, "count": 3},
+        },
+    }
+    keys = _keys(analyze(data))
+    assert "REC-API-001" in keys
+
+
+def test_no_meta_finding_for_isolated_failures() -> None:
+    """One or two failures (feature off, old patch) should NOT claim Open API is down."""
+    data = {
+        "coverage": {
+            "posture.global_settings": {"ok": False, "status": 302},
+            "nads.list": {"ok": True, "count": 3},
+        },
+    }
+    assert "REC-API-001" not in _keys(analyze(data))
+
+
+def test_backup_findings_gated_on_coverage() -> None:
+    """Empty repositories must NOT be flagged when the endpoint never answered."""
+    unread = {
+        "repositories": [],
+        "backup_schedule_config": {},
+        "coverage": {
+            "system.repositories": {"ok": False, "status": 302},
+            "system.backup.config_schedule": {"ok": False, "status": 302},
+        },
+    }
+    keys = _keys(analyze(unread))
+    assert "REC-BACKUP-001" not in keys
+    assert "REC-BACKUP-003" not in keys
+
+    verified_empty = {
+        "repositories": [],
+        "backup_schedule_config": {},
+        "coverage": {
+            "system.repositories": {"ok": True, "count": 0},
+            "system.backup.config_schedule": {"ok": True, "count": 0},
+        },
+    }
+    keys = _keys(analyze(verified_empty))
+    assert "REC-BACKUP-001" in keys
+    assert "REC-BACKUP-003" in keys
+
+
 def test_redactor_strips_secrets() -> None:
     dirty = {"NetworkDevice": {"name": "sw1", "authenticationSettings": {"radiusSharedSecret": "S3cret!"}},
              "tacacs": {"sharedSecret": "T0ps3cret"}, "snmp": {"snmpRoCommunity": "public123"}}

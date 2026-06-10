@@ -571,7 +571,19 @@
       <td class="mono small">{{ k }}</td>
       <td>{% if v.ok %}<span class="pill sev-low">OK</span>{% else %}<span class="pill sev-high">FAIL</span>{% endif %}</td>
       <td class="small muted">
-        {%- if v.ok -%}count={{ v.count }}{%- else -%}{{ v.status or v.error or 'unknown' }}{%- endif -%}
+        {%- if v.ok -%}
+          count={{ v.count }}
+        {%- elif v.status == 302 -%}
+          302 — redirected to login: API service disabled (see REC-API-001)
+        {%- elif v.status == 401 -%}
+          401 — authentication failed
+        {%- elif v.status == 403 -%}
+          403 — account lacks the role for this endpoint
+        {%- elif v.status == 404 -%}
+          404 — not exposed on this version / feature not configured
+        {%- else -%}
+          {{ v.status or v.error or 'unknown' }}
+        {%- endif -%}
       </td>
     </tr>
   {% endfor %}
