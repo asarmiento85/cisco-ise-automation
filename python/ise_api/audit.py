@@ -73,6 +73,27 @@ def _try(fn: Callable[[], Any], coverage: dict, key: str) -> Any:
         return None
 
 
+class _NotifyingCoverage(dict):
+    """Coverage map that reports each completed endpoint to a callback.
+
+    Every collector call records its result via `coverage[key] = {...}`, so
+    hooking __setitem__ gives per-endpoint progress with no changes to the
+    collection logic. Callback signature: cb(endpoint_key, completed_count).
+    """
+
+    def __init__(self, progress_cb: Callable[[str, int], None] | None = None):
+        super().__init__()
+        self._cb = progress_cb
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        super().__setitem__(key, value)
+        if self._cb is not None:
+            try:
+                self._cb(key, len(self))
+            except Exception:  # noqa: BLE001 — progress must never break collection
+                pass
+
+
 def _count(x: Any) -> int | None:
     if x is None:
         return None
@@ -133,8 +154,8 @@ def _openapi_get(c: ISEClient, path: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def collect(c: ISEClient) -> dict[str, Any]:
-    coverage: dict[str, Any] = {}
+def collect(c: ISEClient, progress_cb: Callable[[str, int], None] | None = None) -> dict[str, Any]:
+    coverage: dict[str, Any] = _NotifyingCoverage(progress_cb)
     data: dict[str, Any] = {
         "meta": {
             "pan": c.s.base_url,

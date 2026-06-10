@@ -110,8 +110,13 @@ You'll see this form:
 | **Password** | Its password |
 | **Verify TLS certificate** | Leave **unchecked** if ISE uses a self-signed certificate (most do). Check it only if ISE has a CA-signed admin certificate. |
 
-Click **Run Audit**. The audit takes **20–60 seconds** depending on the size
-of the deployment. When it finishes, the full report appears in the browser.
+Click **Run Audit**. After a quick connection check (a few seconds), a live
+progress screen appears — a percentage bar, the section currently being
+collected (network devices, policies, certificates, …), a running checklist
+of completed sections, and an elapsed timer. The audit takes **20–60 seconds**
+on most deployments; when it finishes, the page opens the full report
+automatically. As long as the progress counter is moving (or the current
+section is shown), it's working — don't close the page.
 
 ---
 

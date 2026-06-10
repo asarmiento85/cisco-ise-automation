@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import threading
+import time
 import webbrowser
 
 import httpx
@@ -62,6 +63,88 @@ app = Flask(__name__)
 # In-memory holder for the most recent run's downloadable artifacts.
 # Single-user localhost app — a module global is fine. Never holds creds.
 _LAST: dict[str, bytes] = {}
+
+# State of the (single) in-flight audit job. Single-user localhost app, so
+# one job at a time is fine. NEVER holds credentials — only progress + the
+# finished (already-redacted) report.
+_JOB: dict = {"state": "idle"}
+_JOB_LOCK = threading.Lock()
+
+# Rough endpoint count for the progress bar. The real total varies a little
+# (per-policy-set sub-calls), so the bar caps at 97% until the run finishes.
+_ESTIMATED_ENDPOINTS = 56
+
+# Human labels for coverage-key prefixes, so the progress page reads like a
+# checklist instead of API internals.
+_PHASE_LABELS = [
+    ("deployment", "Deployment & nodes"),
+    ("system", "System, licensing & backups"),
+    ("nads", "Network devices"),
+    ("identity", "Identity stores & admins"),
+    ("policy.network_access", "Network access policy"),
+    ("policy.device_admin", "Device admin (TACACS+) policy"),
+    ("policy", "Policy elements"),
+    ("profiler", "Profiler"),
+    ("trustsec", "TrustSec"),
+    ("guest", "Guest & portals"),
+    ("certs", "Certificates"),
+    ("security", "Security settings"),
+    ("logging", "Logging & retention"),
+    ("posture", "Posture"),
+    ("pxgrid", "pxGrid"),
+]
+
+
+def _pretty_step(key: str) -> str:
+    for prefix, label in _PHASE_LABELS:
+        if key.startswith(prefix):
+            return label
+    return key
+
+
+def _run_audit_job(settings: ISESettings) -> None:
+    """Worker thread: collect → analyze → render, reporting progress into _JOB."""
+
+    def progress(key: str, done: int) -> None:
+        with _JOB_LOCK:
+            _JOB["done"] = done
+            _JOB["current"] = _pretty_step(key)
+            log = _JOB.setdefault("log", [])
+            label = _pretty_step(key)
+            if not log or log[-1] != label:
+                log.append(label)
+                del log[:-10]
+
+    try:
+        with ISEClient(settings) as c:
+            data = collect(c, progress_cb=progress)
+        with _JOB_LOCK:
+            _JOB["state"] = "analyzing"
+            _JOB["current"] = "Analyzing findings & building recommendations"
+        findings = analyze(data)
+        summary = summarize(data, findings)
+        recs = build_recommendations(findings)
+
+        with _JOB_LOCK:
+            _JOB["state"] = "rendering"
+            _JOB["current"] = "Rendering the report"
+        html = render_html(data, findings, summary, recs)
+        report = inject_app_chrome(html, extra_toolbar_html=_DOWNLOAD_LINKS)
+
+        _LAST.clear()
+        _LAST["json"] = json.dumps(
+            {"data": data, "findings": findings, "summary": summary, "recommendations": recs},
+            indent=2, default=str,
+        ).encode()
+        _LAST["html"] = report.encode()
+        with _JOB_LOCK:
+            _JOB["state"] = "done"
+            _JOB["report"] = report
+    except Exception as e:  # noqa: BLE001
+        with _JOB_LOCK:
+            _JOB["state"] = "error"
+            _JOB["error"] = f"{type(e).__name__}: {e}"
+
 
 _BRAND = "#0b3d91"
 
@@ -127,9 +210,9 @@ _FORM_PAGE = """<!DOCTYPE html>
       <button id="btn" type="submit">Run Audit</button>
     </form>
     <div id="spinner">
-      Running audit against the PAN… this typically takes 20–60 seconds.
+      Checking connection to the PAN…
       <div class="bar"><div></div></div>
-      Collecting deployment, policy, identity, certs, TrustSec…
+      You'll see live progress on the next screen.
     </div>
     <div style="padding: 0 26px 22px;">
       <p class="note">
@@ -148,6 +231,84 @@ _FORM_PAGE = """<!DOCTYPE html>
       document.getElementById('f').style.display = 'none';
       document.getElementById('spinner').style.display = 'block';
     }
+  </script>
+</body></html>
+""".replace("%BRAND%", _BRAND)
+
+
+_PROGRESS_PAGE = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Running audit…</title>
+<style>
+  :root { --brand: %BRAND%; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         background: #f3f4f6; margin: 0; color: #111827; }
+  .wrap { max-width: 560px; margin: 6vh auto; padding: 0 16px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 6px 24px rgba(0,0,0,.08); overflow: hidden; }
+  .head { background: var(--brand); color: #fff; padding: 22px 26px; }
+  .head h1 { margin: 0; font-size: 18px; }
+  .head p { margin: 6px 0 0; opacity: .85; font-size: 13px; }
+  .body { padding: 22px 26px; }
+  .barwrap { background: #e5e7eb; border-radius: 999px; height: 14px; overflow: hidden; }
+  .bar { height: 100%; width: 2%; background: var(--brand); border-radius: 999px;
+         transition: width .5s ease; }
+  .pct { font-size: 28px; font-weight: 800; color: var(--brand); margin: 12px 0 2px; }
+  .current { font-size: 14px; color: #374151; min-height: 20px; }
+  .meta { font-size: 12px; color: #6b7280; margin-top: 4px; }
+  ul.log { list-style: none; margin: 16px 0 0; padding: 12px 0 0; border-top: 1px solid #e5e7eb;
+           font-size: 12.5px; color: #6b7280; }
+  ul.log li { margin: 3px 0; }
+  ul.log li::before { content: "✓ "; color: #059669; font-weight: 700; }
+  ul.log li.now::before { content: "… "; color: var(--brand); }
+  ul.log li.now { color: #111827; font-weight: 600; }
+  .note { font-size: 11.5px; color: #9ca3af; margin-top: 16px; }
+</style></head>
+<body>
+  <div class="wrap"><div class="card">
+    <div class="head">
+      <h1>Audit in progress</h1>
+      <p>Reading your ISE deployment — read-only, nothing is being changed.</p>
+    </div>
+    <div class="body">
+      <div class="pct" id="pct">0%</div>
+      <div class="barwrap"><div class="bar" id="bar"></div></div>
+      <div class="current" id="current" style="margin-top:12px;">Starting…</div>
+      <div class="meta"><span id="count">0</span> endpoints collected · elapsed <span id="elapsed">0s</span></div>
+      <ul class="log" id="log"></ul>
+      <p class="note">This page checks progress twice a second. It will open the
+      report automatically when the audit completes. Typical runtime: 20–60 seconds.</p>
+    </div>
+  </div></div>
+  <script>
+    var t0 = Date.now();
+    function tick() {
+      fetch('/status').then(function (r) { return r.json(); }).then(function (s) {
+        var pct, label;
+        if (s.state === 'done' || s.state === 'error') { window.location = '/report'; return; }
+        if (s.state === 'collecting') {
+          pct = Math.min(97, Math.round(100 * (s.done || 0) / s.total));
+          label = s.current || 'Collecting…';
+        } else if (s.state === 'analyzing' || s.state === 'rendering') {
+          pct = 98; label = s.current;
+        } else { pct = 1; label = 'Starting…'; }
+        document.getElementById('pct').textContent = pct + '%';
+        document.getElementById('bar').style.width = Math.max(2, pct) + '%';
+        document.getElementById('current').textContent = label;
+        document.getElementById('count').textContent = s.done || 0;
+        document.getElementById('elapsed').textContent = Math.round((Date.now() - t0) / 1000) + 's';
+        var log = document.getElementById('log');
+        log.innerHTML = '';
+        (s.log || []).forEach(function (item, i, arr) {
+          var li = document.createElement('li');
+          li.textContent = item;
+          if (i === arr.length - 1 && s.state === 'collecting') li.className = 'now';
+          log.appendChild(li);
+        });
+        setTimeout(tick, 600);
+      }).catch(function () { setTimeout(tick, 1500); });
+    }
+    tick();
   </script>
 </body></html>
 """.replace("%BRAND%", _BRAND)
@@ -199,36 +360,51 @@ def run():
     if not host or not username:
         return _error_page("Host and username are required."), 400
 
+    with _JOB_LOCK:
+        if _JOB.get("state") in ("collecting", "analyzing", "rendering"):
+            return _PROGRESS_PAGE  # a run is already going — show its progress
+
     try:
         settings = ISESettings(  # type: ignore[call-arg]
             host=host, port=port, username=username, password=password, verify_ssl=verify
         )
-        # Fast pre-flight so bad host/creds fail in ~6s, not after full retries.
+        # Fast pre-flight (sync) so bad host/creds fail in ~6s with a clear page.
         ok, why = _preflight(settings)
         if not ok:
             return _error_page(why)
-        with ISEClient(settings) as c:
-            data = collect(c)
-        findings = analyze(data)
-        summary = summarize(data, findings)
-        recs = build_recommendations(findings)
 
-        html = render_html(data, findings, summary, recs)
-        report = inject_app_chrome(html, extra_toolbar_html=_DOWNLOAD_LINKS)
-
-        # Stash redacted artifacts for the download buttons. NO credentials here.
-        _LAST.clear()
-        _LAST["json"] = json.dumps(
-            {"data": data, "findings": findings, "summary": summary, "recommendations": recs},
-            indent=2, default=str,
-        ).encode()
-        _LAST["html"] = report.encode()
-        return report
+        with _JOB_LOCK:
+            _JOB.clear()
+            _JOB.update({
+                "state": "collecting", "done": 0, "total": _ESTIMATED_ENDPOINTS,
+                "current": "Connecting…", "log": [],
+            })
+        threading.Thread(target=_run_audit_job, args=(settings,), daemon=True).start()
+        return _PROGRESS_PAGE
     except Exception as e:
         return _error_page(f"{type(e).__name__}: {e}")
     finally:
         # Defensive: drop the password reference promptly.
         password = ""
+
+
+@app.get("/status")
+def status():
+    with _JOB_LOCK:
+        snap = {k: _JOB.get(k) for k in ("state", "done", "total", "current", "error")}
+        snap["log"] = list(_JOB.get("log", []))
+    return snap
+
+
+@app.get("/report")
+def report():
+    with _JOB_LOCK:
+        state = _JOB.get("state")
+        if state == "done":
+            return _JOB["report"]
+        if state == "error":
+            return _error_page(_JOB.get("error", "Unknown error"))
+    return redirect("/")
 
 
 @app.get("/download/json")

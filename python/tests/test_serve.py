@@ -1,10 +1,13 @@
 """Offline tests for the local audit web UI (scripts/serve.py).
 
 Drives the real Flask app with the ISE-facing pieces monkeypatched, so the
-whole form → run → report → download flow is verified without a live PAN.
+whole form → run (background job) → progress → report → download flow is
+verified without a live PAN.
 """
 
 from __future__ import annotations
+
+import time
 
 import pytest
 
@@ -36,8 +39,15 @@ def client(monkeypatch):
         "coverage": {"deployment.nodes": {"ok": True, "count": 1}},
     }
 
+    def fake_collect(c, progress_cb=None):
+        # Simulate a couple of progress callbacks like the real collector.
+        if progress_cb:
+            progress_cb("deployment.nodes", 1)
+            progress_cb("nads.list", 2)
+        return fake_data
+
     monkeypatch.setattr(serve, "_preflight", lambda settings: (True, ""))
-    monkeypatch.setattr(serve, "collect", lambda c: fake_data)
+    monkeypatch.setattr(serve, "collect", fake_collect)
 
     class _FakeClient:
         def __init__(self, settings=None):
@@ -51,9 +61,29 @@ def client(monkeypatch):
 
     monkeypatch.setattr(serve, "ISEClient", _FakeClient)
     serve._LAST.clear()
+    with serve._JOB_LOCK:
+        serve._JOB.clear()
+        serve._JOB["state"] = "idle"
     serve.app.config["TESTING"] = True
     with serve.app.test_client() as c:
         yield c
+
+
+def _start_run(client, **overrides):
+    data = {"host": "ise.test", "port": "443", "username": "u", "password": "p"}
+    data.update(overrides)
+    return client.post("/run", data=data)
+
+
+def _wait_done(client, timeout=10.0):
+    """Poll /status until the background job finishes."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        s = client.get("/status").get_json()
+        if s["state"] in ("done", "error"):
+            return s
+        time.sleep(0.05)
+    raise AssertionError("job did not finish in time")
 
 
 def test_form_renders(client):
@@ -64,8 +94,27 @@ def test_form_renders(client):
         assert field in body
 
 
-def test_run_success_renders_interactive_report(client):
-    r = client.post("/run", data={"host": "ise.test", "port": "443", "username": "u", "password": "p"})
+def test_run_returns_progress_page(client):
+    r = _start_run(client)
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert "Audit in progress" in body
+    assert "/status" in body          # polling wired
+    _wait_done(client)
+
+
+def test_status_progresses_to_done(client):
+    _start_run(client)
+    s = _wait_done(client)
+    assert s["state"] == "done"
+    assert s["done"] >= 2             # fake progress callbacks counted
+    assert s["log"]                   # human-readable step log populated
+
+
+def test_report_after_done_is_interactive(client):
+    _start_run(client)
+    _wait_done(client)
+    r = client.get("/report")
     assert r.status_code == 200
     body = r.get_data(as_text=True)
     assert "app-toolbar" in body            # interactive shell injected
@@ -73,8 +122,14 @@ def test_run_success_renders_interactive_report(client):
     assert "/download/json" in body         # download buttons wired
 
 
+def test_report_before_any_run_redirects(client):
+    r = client.get("/report")
+    assert r.status_code in (301, 302)
+
+
 def test_downloads_available_after_run(client):
-    client.post("/run", data={"host": "ise.test", "port": "443", "username": "u", "password": "p"})
+    _start_run(client)
+    _wait_done(client)
     j = client.get("/download/json")
     assert j.status_code == 200
     assert b'"findings"' in j.data
@@ -95,13 +150,26 @@ def test_missing_fields_rejected(client):
 
 def test_preflight_failure_shows_error_page(client, monkeypatch):
     monkeypatch.setattr(serve, "_preflight", lambda settings: (False, "Authentication failed (401)."))
-    r = client.post("/run", data={"host": "ise.test", "port": "443", "username": "u", "password": "bad"})
+    r = _start_run(client, password="bad")
     body = r.get_data(as_text=True)
     assert "Audit could not complete" in body
     assert "Authentication failed" in body
 
 
+def test_collect_error_surfaces_on_report_page(client, monkeypatch):
+    def boom(c, progress_cb=None):
+        raise RuntimeError("mid-run failure")
+
+    monkeypatch.setattr(serve, "collect", boom)
+    _start_run(client)
+    s = _wait_done(client)
+    assert s["state"] == "error"
+    r = client.get("/report")
+    assert "mid-run failure" in r.get_data(as_text=True)
+
+
 def test_no_credentials_in_artifacts(client):
-    client.post("/run", data={"host": "ise.test", "port": "443", "username": "u", "password": "Sup3rS3cret!"})
+    _start_run(client, password="Sup3rS3cret!")
+    _wait_done(client)
     assert b"Sup3rS3cret!" not in serve._LAST["json"]
     assert b"Sup3rS3cret!" not in serve._LAST["html"]
