@@ -48,7 +48,12 @@ ERS is disabled by default in newer ISE installations.
 
 ## 2. Create a dedicated read-only audit account
 
-You do **not** want to use your personal admin credentials or the default `admin` account for this. Create a fresh, scoped, throwaway account.
+You do **not** want to use your personal admin credentials or the default `admin` account for this. Pick one of the two options below.
+
+- **Option A — local (internal) account**: quickest; nothing needed on the AD side. Best for one-off audits.
+- **Option B — AD-backed access**: map an AD security group to ISE's read-only admin groups. Best when your admins already log in to ISE with AD — onboarding/offboarding auditors is then just AD group membership.
+
+### Option A — local internal account
 
 1. Navigate to **Administration → System → Admin Access → Administrators → Admin Users**
 2. Click **+ Add → Create an Admin User**
@@ -73,6 +78,65 @@ You do **not** want to use your personal admin credentials or the default `admin
 5. Click **Save**
 
 > **Important:** "Read Only Admin" sounds broad, but it is genuinely read-only — the role cannot perform any write operation, GUI or API. If your security team wants to verify, they can: the role definition is at **Administration → System → Admin Access → Authorization → Permissions → RBAC Policy**, where you'll see all permissions for that group are "Menu Access: read-only" or "Data Access: read-only".
+
+### Option B — AD-backed access (admins already log in with AD)
+
+Instead of a local account, map an AD security group to ISE's built-in
+read-only admin groups. Auditors then use their normal AD credentials — in
+the GUI **and** in the audit tool's form.
+
+**On the AD side (one-time):**
+
+1. Create a security group, e.g. `SG-ISE-Audit-ReadOnly`
+2. Add the auditor's AD account(s) to it
+
+**On the ISE side:**
+
+1. **Import the group into the join point** (required before it appears in
+   any mapping dropdown): **Administration → Identity Management → External
+   Identity Sources → Active Directory → *your join point* → Groups tab →
+   Add → Select Groups From Directory** → search for the group → check it →
+   **OK** → **Save**
+2. **Verify admin authentication uses AD** (already true if admins log in
+   with AD today): **Administration → System → Admin Access →
+   Authentication → Authentication Method** → **Password Based**, Identity
+   Source = the AD join point. The local `admin` account stays available as
+   break-glass via the "Internal" entry in the login page's identity-source
+   dropdown.
+3. **Map the AD group to the admin groups** — external membership is
+   configured *on the admin group*, not on a user object:
+   **Administration → System → Admin Access → Administrators → Admin
+   Groups**:
+   - Open **Read Only Admin** → Type: **External** → External Groups:
+     select `SG-ISE-Audit-ReadOnly` → **Save**
+   - Open **ERS Operator** → Type: **External** → select the same group →
+     **Save**
+
+   Mapping the same AD group to both gives full GUI read-only plus API read
+   access with one group. The built-in groups already carry read-only RBAC
+   policies — nothing else to configure.
+4. **Test.** GUI: log out, pick the AD identity source on the login page,
+   log in with the AD account — you should see the read-only banner. API:
+
+   ```bash
+   curl -k -u 'jsmith:ADpassword' \
+     "https://<pan>/ers/config/networkdevice?size=1" -H "Accept: application/json"
+   ```
+
+   HTTP 200 means it works. In the audit tool's form, the username is the
+   plain **sAMAccountName** (`jsmith` — no `DOMAIN\` prefix, no `@domain`).
+
+**Caveats:**
+
+- **SAML/SSO admin login does not extend to the API.** ERS uses basic
+  authentication; it works with *password-based* AD admin auth. If the GUI
+  uses SAML, use a local account (Option A) for the API instead.
+- AD group-membership changes take effect at the auditor's **next login** —
+  onboarding/offboarding an auditor is purely an AD operation.
+- If the AD group doesn't appear in the External Groups dropdown (step 3),
+  it wasn't imported into the join point's Groups tab (step 1).
+- Failed logins are visible under **Operations → Reports → Audit →
+  Administrator Logins** with the failure reason.
 
 ---
 
