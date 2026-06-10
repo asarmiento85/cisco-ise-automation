@@ -164,6 +164,11 @@ ISE_VERIFY_SSL=false                 # set to true if your PAN has a public-CA c
 
 ### Option A — browser form (easiest, no CLI knowledge needed)
 
+> A standalone, end-user version of this option — covering just download,
+> run, and troubleshooting with no ISE-admin steps — is in
+> [03-audit-quickstart.md](03-audit-quickstart.md). Hand that page to the
+> person running the audit if someone else handled the ISE-side setup.
+
 ```bash
 cd python
 uv run --extra web python -m scripts.serve

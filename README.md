@@ -195,6 +195,11 @@ fails fast (~6s) with a plain-English error page instead of hanging.
 The web flow is covered by offline tests (`tests/test_serve.py`) that drive
 the real Flask app with the ISE calls mocked.
 
+A customer-facing download-and-run guide (install `uv`, get the repo, run the
+form, save results, troubleshoot) is in
+[`docs/03-audit-quickstart.md`](docs/03-audit-quickstart.md) — hand that
+single page to whoever will run the audit.
+
 ### Self-contained report for hands-off customers
 
 If a customer won't run scripts, install Python, or expose their API, split
