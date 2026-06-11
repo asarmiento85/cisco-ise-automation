@@ -168,6 +168,34 @@ def test_backup_findings_gated_on_coverage() -> None:
     assert "REC-BACKUP-003" in keys
 
 
+def test_super_admin_count_handles_string_groups() -> None:
+    """ERS returns adminGroups as a plain string — the sprawl counter must
+    still see it (and not iterate it character by character)."""
+    data = {
+        "admin_users": [
+            {"name": f"admin{i}", "enabled": True, "adminGroups": "Super Admin"}
+            for i in range(5)
+        ],
+        "coverage": {},
+    }
+    keys = _keys(analyze(data))
+    assert "REC-ADMIN-002" in keys
+
+
+def test_normalize_patches_shapes() -> None:
+    from scripts.audit_deep import _normalize_patches
+
+    assert _normalize_patches([{"patchNumber": 4, "installDate": "Wed Nov 06"}]) == [
+        "Patch 4 — installed Wed Nov 06"
+    ]
+    assert _normalize_patches({"patchDetails": [{"patchVersion": "3.3 P2"}]}) == ["Patch 3.3 P2"]
+    assert _normalize_patches({"installedPatchVersion": "3.3 Patch 2"}) == ["3.3 Patch 2"]
+    assert _normalize_patches(None) == []
+    assert _normalize_patches("3.2 patch 6") == ["3.2 patch 6"]
+    # raw repr never leaks
+    assert all(not s.startswith("[{") for s in _normalize_patches([{"patchNumber": 1}]))
+
+
 def test_redactor_strips_secrets() -> None:
     dirty = {"NetworkDevice": {"name": "sw1", "authenticationSettings": {"radiusSharedSecret": "S3cret!"}},
              "tacacs": {"sharedSecret": "T0ps3cret"}, "snmp": {"snmpRoCommunity": "public123"}}

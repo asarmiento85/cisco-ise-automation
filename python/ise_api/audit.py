@@ -393,7 +393,9 @@ def analyze(data: dict[str, Any]) -> list[dict]:
         if a.get("name") == "admin" and a.get("enabled"):
             f.append(_finding("med", "Admin access", "Default 'admin' account enabled — confirm MFA + rotation policy.", "admin_users", "REC-ADMIN-001"))
         groups = a.get("adminGroups") or []
-        if isinstance(groups, list) and any("Super Admin" in str(g) for g in groups):
+        if isinstance(groups, str):
+            groups = [groups]
+        if any("Super Admin" in str(g) for g in groups):
             super_count += 1
     if super_count > 3:
         f.append(_finding("med", "Admin access", f"{super_count} Super Admin accounts — minimize membership.", "admin_users", "REC-ADMIN-002"))

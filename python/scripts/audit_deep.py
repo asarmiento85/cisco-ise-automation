@@ -28,6 +28,30 @@ app = typer.Typer(add_completion=False, help=__doc__)
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 
 
+def _normalize_patches(p) -> list[str]:
+    """ISE's patch endpoint shape varies by version (list of dicts, wrapped
+    dict, or string). Flatten to display strings so the template never shows
+    a raw repr."""
+    if isinstance(p, dict):
+        inner = p.get("patchDetails") or p.get("patches") or p.get("response")
+        if inner is None:
+            scalar = p.get("installedPatchVersion") or p.get("patchVersion")
+            return [str(scalar)] if scalar else []
+        p = inner
+    if isinstance(p, str):
+        return [p] if p.strip() else []
+    out: list[str] = []
+    for item in p or []:
+        if isinstance(item, dict):
+            label = f"Patch {item.get('patchVersion') or item.get('patchNumber') or '?'}"
+            if item.get("installDate"):
+                label += f" — installed {item['installDate']}"
+            out.append(label)
+        else:
+            out.append(str(item))
+    return out
+
+
 def render_html(data: dict, findings: list[dict], summary: dict, recommendations: list[dict]) -> str:
     env = Environment(
         loader=FileSystemLoader(str(_TEMPLATE_DIR)),
@@ -64,7 +88,7 @@ def render_html(data: dict, findings: list[dict], summary: dict, recommendations
         repositories=data.get("repositories", []),
         backup_schedule_config=data.get("backup_schedule_config", {}),
         pan_hostname=data.get("pan_hostname", "-"),
-        patches=data.get("patches", []),
+        patches=_normalize_patches(data.get("patches")),
         license_smart=data.get("license_smart", {}),
         # migration / security / operational additions
         allowed_protocols=data.get("allowed_protocols", []),
@@ -134,9 +158,10 @@ _APP_STYLE = """
     #app-emptymsg { display:none; color:#6b7280; font-style:italic; margin:8px 0; }
   }
   @media print {
-    #app-toolbar { display: none !important; }
+    #app-toolbar, #app-emptymsg { display: none !important; }
     body { padding-top: 0 !important; }
     .rec.collapsed > * { display: revert !important; }
+    tr.app-hidden, .rec.app-hidden { display: revert !important; }
   }
 </style>
 """

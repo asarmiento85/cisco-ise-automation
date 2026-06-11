@@ -233,14 +233,7 @@
 {% if patches %}
 <h3>Patches / hotpatches</h3>
 <p class="small">
-  {% if patches is mapping %}
-    {{ patches.get('installedPatchVersion') or patches.get('patchVersion') or patches }}
-  {% else %}
-    {{ patches|length }} patches reported.
-    {% if patches and patches[0] is mapping %}
-      Latest: <span class="mono">{{ patches[0].patchVersion or patches[0].patchNumber or '-' }}</span>
-    {% endif %}
-  {% endif %}
+  {% for p in patches %}<span class="tag">{{ p }}</span>{% endfor %}
 </p>
 {% endif %}
 
@@ -274,7 +267,9 @@
       <td>{{ n.profileName or '-' }}</td>
       <td class="small">
         {%- for g in n.NetworkDeviceGroupList or [] -%}
-          <span class="tag">{{ g.split('#')[-1] }}</span>
+          {%- if not g.startswith('IPSEC#') -%}
+            <span class="tag">{{ g.split('#')[-1] }}</span>
+          {%- endif -%}
         {%- endfor -%}
       </td>
       <td class="mono small">{{ n.coaPort or '-' }}</td>
@@ -305,7 +300,8 @@
       <td class="mono">{{ a.name }}</td>
       <td>{{ a.enabled }}</td>
       <td class="small">
-        {%- for g in a.adminGroups or [] -%}<span class="tag">{{ g }}</span>{%- endfor -%}
+        {%- set ag = [a.adminGroups] if a.adminGroups is string else (a.adminGroups or []) -%}
+        {%- for g in ag -%}<span class="tag">{{ g }}</span>{%- endfor -%}
       </td>
     </tr>
   {% endfor %}
