@@ -192,6 +192,14 @@ def test_normalize_patches_shapes() -> None:
     assert _normalize_patches({"installedPatchVersion": "3.3 Patch 2"}) == ["3.3 Patch 2"]
     assert _normalize_patches(None) == []
     assert _normalize_patches("3.2 patch 6") == ["3.2 patch 6"]
+    # ISE quirk: the patch list arrives as a STRING of Python repr
+    assert _normalize_patches("[{'patchNumber': 4, 'installDate': 'Wed Nov 06'}]") == [
+        "Patch 4 — installed Wed Nov 06"
+    ]
+    # Real ISE 3.3 shape: version + list under 'patchVersion'
+    assert _normalize_patches(
+        {"iseVersion": "3.3.0.430", "patchVersion": [{"patchNumber": 6, "installDate": "Thu Jul 03"}]}
+    ) == ["ISE 3.3.0.430", "Patch 6 — installed Thu Jul 03"]
     # raw repr never leaks
     assert all(not s.startswith("[{") for s in _normalize_patches([{"patchNumber": 1}]))
 

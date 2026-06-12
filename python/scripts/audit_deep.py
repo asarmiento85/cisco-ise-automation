@@ -30,17 +30,34 @@ _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 
 def _normalize_patches(p) -> list[str]:
     """ISE's patch endpoint shape varies by version (list of dicts, wrapped
-    dict, or string). Flatten to display strings so the template never shows
-    a raw repr."""
+    dict, or string). Some versions even return the list AS a string of
+    Python-repr (single quotes), so parse that too. Flatten to display
+    strings so the template never shows a raw repr."""
+    prefix: list[str] = []
     if isinstance(p, dict):
-        inner = p.get("patchDetails") or p.get("patches") or p.get("response")
+        ver = p.get("iseVersion")
+        if ver:
+            prefix.append(f"ISE {ver}")
+        inner = (
+            p.get("patchDetails") or p.get("patches") or p.get("response")
+            or p.get("patchVersion") or p.get("installedPatchVersion")
+        )
         if inner is None:
-            scalar = p.get("installedPatchVersion") or p.get("patchVersion")
-            return [str(scalar)] if scalar else []
+            return prefix
         p = inner
     if isinstance(p, str):
-        return [p] if p.strip() else []
-    out: list[str] = []
+        s = p.strip()
+        if s.startswith(("[", "{")):
+            import ast
+            try:
+                p = ast.literal_eval(s)  # safe: literals only
+            except (ValueError, SyntaxError):
+                return prefix + [s]
+            if isinstance(p, dict):
+                p = [p]
+        else:
+            return prefix + ([s] if s else [])
+    out: list[str] = prefix
     for item in p or []:
         if isinstance(item, dict):
             label = f"Patch {item.get('patchVersion') or item.get('patchNumber') or '?'}"
