@@ -18,7 +18,10 @@
     --brand: #0b3d91;
   }
   * { box-sizing: border-box; }
-  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); margin: 0; font-size: 10.5pt; line-height: 1.45; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); margin: 0; font-size: 10.5pt; line-height: 1.45; counter-reset: section; }
+  /* Auto-number top-level sections so inserting/reordering never needs a manual renumber. */
+  h2.section { counter-increment: section; }
+  h2.section::before { content: counter(section) ". "; }
   header.cover { padding: 28pt 24pt; border-bottom: 4px solid var(--brand); margin-bottom: 18pt; page-break-after: always; }
   header.cover h1 { font-size: 24pt; margin: 0 0 10pt 0; color: var(--brand); }
   header.cover .sub { color: var(--muted); font-size: 11pt; }
@@ -129,7 +132,7 @@
   <p class="small muted" style="margin-top: 22pt;">All data was retrieved via authenticated read-only ERS / OpenAPI calls. No configuration was changed. Sensitive material (passwords, shared secrets, private keys) is not exposed by the API and is not present in this report.</p>
 </header>
 
-<h2>1. Executive summary</h2>
+<h2 class="section">Executive summary</h2>
 <div class="grid">
   <div class="card high"><div class="label">High findings</div><div class="value">{{ summary.severity.high }}</div></div>
   <div class="card med"><div class="label">Medium</div><div class="value">{{ summary.severity.med }}</div></div>
@@ -147,7 +150,7 @@
   <div class="card"><div class="label">SGTs</div><div class="value">{{ summary.counts.sgts }}</div></div>
 </div>
 
-<h2>2. Findings</h2>
+<h2 class="section">Findings</h2>
 {% if findings %}
 <table>
   <thead><tr><th class="nowrap">Severity</th><th>Category</th><th>Finding</th></tr></thead>
@@ -165,7 +168,7 @@
 <p class="muted">No heuristic findings surfaced by this audit pass.</p>
 {% endif %}
 
-<h2>3. Recommendations</h2>
+<h2 class="section">Recommendations</h2>
 <p class="small muted">Prioritized actions derived from findings, plus operational hygiene that applies regardless. <strong>P1</strong> = act this sprint · <strong>P2</strong> = plan this quarter · <strong>P3</strong> = opportunistic cleanup.</p>
 
 {% if recommendations %}
@@ -214,7 +217,142 @@
 <p class="muted">No recommendations generated.</p>
 {% endif %}
 
-<h2>4. Deployment</h2>
+{% set pa = policy_analysis %}
+{% if pa and pa.stats %}
+<h2 class="section">Policy analysis</h2>
+<p class="small muted">Derived from per-rule hit counters and rule structure in the policy config.
+Hit counts are cumulative <strong>since the counter last reset</strong> (node restart / manual clear),
+so a 0 is a candidate to review, not proof a rule never matched.</p>
+
+<div class="grid">
+  <div class="card"><div class="label">Policy sets</div><div class="value">{{ pa.stats.sets }}</div></div>
+  <div class="card"><div class="label">Authz rules</div><div class="value">{{ pa.stats.rules }}</div></div>
+  <div class="card"><div class="label">Enabled</div><div class="value">{{ pa.stats.enabled }}</div></div>
+  <div class="card"><div class="label">Disabled</div><div class="value">{{ pa.stats.disabled }}</div></div>
+</div>
+
+<h3>Per-set overview</h3>
+<table>
+  <thead><tr><th>Policy set</th><th>Type</th><th>State</th><th>Authz rules</th><th>Enabled</th><th>Disabled</th><th>Total hits</th><th>Default-deny</th></tr></thead>
+  <tbody>
+  {% for s in pa.sets %}
+    <tr>
+      <td class="mono small">{{ s.name }}</td>
+      <td class="small">{{ s.kind }}</td>
+      <td class="small">{{ s.state }}</td>
+      <td class="mono small">{{ s.authz_total }}</td>
+      <td class="mono small">{{ s.enabled }}</td>
+      <td class="mono small">{% if s.mostly_disabled %}<span style="color:#d97706;">{{ s.disabled }}</span>{% else %}{{ s.disabled }}{% endif %}</td>
+      <td class="mono small">{% if s.hits == 0 and s.state != 'disabled' %}<span style="color:#d97706;">0</span>{% else %}{{ '{:,}'.format(s.hits) }}{% endif %}</td>
+      <td class="small">{% if s.has_default_deny %}yes{% else %}<span style="color:#dc2626;">no</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h3>Most-active rules (by hits)</h3>
+<table>
+  <thead><tr><th>Hits</th><th>Rule</th><th>Policy set</th><th>State</th></tr></thead>
+  <tbody>
+  {% for r in pa.top_rules %}
+    <tr>
+      <td class="mono small">{{ '{:,}'.format(r.hits) }}</td>
+      <td class="mono small">{{ r.rule }}</td>
+      <td class="small">{{ r.set }}</td>
+      <td class="small">{{ r.state }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if pa.test_rules %}
+<h3>Test / temporary rules enabled in production</h3>
+<table>
+  <thead><tr><th>Rule</th><th>Policy set</th><th>Result</th><th>Hits</th></tr></thead>
+  <tbody>
+  {% for t in pa.test_rules %}
+    <tr>
+      <td class="mono small">{{ t.rule }}</td>
+      <td class="small">{{ t.set }}</td>
+      <td class="small">{{ t.profile }}</td>
+      <td class="mono small">{% if t.hits > 0 %}<span style="color:#dc2626;font-weight:700;">{{ '{:,}'.format(t.hits) }}</span>{% else %}0{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if pa.duplicate_profiles %}
+<h3>Duplicate authorization profiles</h3>
+<p class="small muted">Profiles that push an identical result (same VLAN / dACL / redirect).</p>
+<table>
+  <thead><tr><th>Functionally identical profiles</th><th>Result</th></tr></thead>
+  <tbody>
+  {% for d in pa.duplicate_profiles %}
+    <tr>
+      <td class="small">{% for n in d.names %}<span class="tag">{{ n }}</span>{% endfor %}</td>
+      <td class="mono small">{{ d.signature }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if pa.shadowed %}
+<h3>Shadowed / unreachable rules</h3>
+<table>
+  <thead><tr><th>Rule</th><th>Policy set</th><th>Shadowed by</th></tr></thead>
+  <tbody>
+  {% for s in pa.shadowed %}
+    <tr><td class="mono small">{{ s.rule }}</td><td class="small">{{ s.set }}</td><td class="mono small">{{ s.shadowed_by }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if pa.broken_refs %}
+<h3>Broken references</h3>
+<table>
+  <thead><tr><th>Rule</th><th>Policy set</th><th>Missing {{ '' }}</th><th>Object</th></tr></thead>
+  <tbody>
+  {% for b in pa.broken_refs %}
+    <tr><td class="mono small">{{ b.rule }}</td><td class="small">{{ b.set }}</td><td class="small">{{ b.kind }}</td><td class="mono small">{{ b.missing }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if pa.stale_zero_hit %}
+<h3>Stale candidates — enabled rules with 0 hits ({{ pa.stale_zero_hit|length }})</h3>
+<p class="small muted">In active policy sets. Verify against a full hit-count window before removing.</p>
+<table>
+  <thead><tr><th>Rule</th><th>Policy set</th><th>Result</th></tr></thead>
+  <tbody>
+  {% for s in pa.stale_zero_hit[:25] %}
+    <tr><td class="mono small">{{ s.rule }}</td><td class="small">{{ s.set }}</td><td class="small">{{ s.profile }}</td></tr>
+  {% endfor %}
+  {% if pa.stale_zero_hit|length > 25 %}<tr><td class="small muted" colspan="3">… +{{ pa.stale_zero_hit|length - 25 }} more (see JSON)</td></tr>{% endif %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if pa.inactive_sets %}
+<h3>Inactive policy sets (no recorded activity)</h3>
+<p class="small">{% for s in pa.inactive_sets %}<span class="tag">{{ s }}</span>{% endfor %}</p>
+{% endif %}
+
+{% if pa.empty_tacacs %}
+<h3>TACACS+ rules with no result</h3>
+<table>
+  <thead><tr><th>Rule</th><th>Policy set</th></tr></thead>
+  <tbody>
+  {% for e in pa.empty_tacacs %}<tr><td class="mono small">{{ e.rule }}</td><td class="small">{{ e.set }}</td></tr>{% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endif %}
+
+<h2 class="section">Deployment</h2>
 <table>
   <thead><tr><th>Hostname</th><th>Personas</th><th>Roles</th><th>Status</th><th>Version</th></tr></thead>
   <tbody>
@@ -252,7 +390,7 @@
 </table>
 {% endif %}
 
-<h2>5. Network access devices</h2>
+<h2 class="section">Network access devices</h2>
 <table>
   <thead><tr><th>Name</th><th>IP / mask</th><th>Profile</th><th>NDGs</th><th>CoA port</th></tr></thead>
   <tbody>
@@ -283,7 +421,7 @@
   {%- for g in ndgs -%}<span class="tag">{{ g.name }}</span>{%- endfor -%}
 </p>
 
-<h2>6. Identity</h2>
+<h2 class="section">Identity</h2>
 <div class="grid">
   <div class="card"><div class="label">User identity groups</div><div class="value">{{ summary.counts.user_groups }}</div></div>
   <div class="card"><div class="label">Endpoint identity groups</div><div class="value">{{ summary.counts.endpoint_groups }}</div></div>
@@ -330,7 +468,7 @@
   </tbody>
 </table>
 
-<h2>7. Policy — network access</h2>
+<h2 class="section">Policy — network access</h2>
 {% for ps in policy_sets_detail %}
 <section>
   <h3>Set: {{ ps.policy_set.name }} <span class="muted small">({{ ps.policy_set.state or 'enabled' }})</span></h3>
@@ -350,7 +488,7 @@
   </table>
   <h4 class="small">Authorization rules ({{ ps.authorization|length }})</h4>
   <table>
-    <thead><tr><th>Name</th><th>Profile(s)</th><th>Security Group</th><th>State</th></tr></thead>
+    <thead><tr><th>Name</th><th>Profile(s)</th><th>Security Group</th><th>Hits</th><th>State</th></tr></thead>
     <tbody>
       {% for r in ps.authorization %}
         <tr>
@@ -359,6 +497,7 @@
             {%- for p in r.profile or [] -%}<span class="tag">{{ p }}</span>{%- endfor -%}
           </td>
           <td class="small">{{ r.securityGroup or '-' }}</td>
+          <td class="mono small">{{ '{:,}'.format(r.rule.hitCounts) if r.rule and r.rule.hitCounts is not none else '-' }}</td>
           <td class="small">{{ r.rule.state if r.rule else '-' }}</td>
         </tr>
       {% endfor %}
@@ -367,22 +506,23 @@
 </section>
 {% endfor %}
 
-<h2>8. Policy — device admin (TACACS+)</h2>
+<h2 class="section">Policy — device admin (TACACS+)</h2>
 {% if device_admin_sets_detail %}
 {% for ps in device_admin_sets_detail %}
 <section>
   <h3>Set: {{ ps.policy_set.name }}</h3>
   <p class="small">Auth rules: {{ ps.authentication|length }} · Authz rules: {{ ps.authorization|length }}</p>
   <table>
-    <thead><tr><th>Authz rule</th><th>Shell profile</th><th>Command sets</th><th>State</th></tr></thead>
+    <thead><tr><th>Authz rule</th><th>Shell profile</th><th>Command sets</th><th>Hits</th><th>State</th></tr></thead>
     <tbody>
       {% for r in ps.authorization %}
         <tr>
           <td class="mono small">{{ r.rule.name if r.rule else '-' }}</td>
-          <td class="small">{{ r.shellProfile or '-' }}</td>
+          <td class="small">{{ r.profile or '-' }}</td>
           <td class="small">
-            {%- for cs in r.commandSets or [] -%}<span class="tag">{{ cs }}</span>{%- endfor -%}
+            {%- for cs in r.commands or [] -%}<span class="tag">{{ cs }}</span>{%- else -%}-{%- endfor -%}
           </td>
+          <td class="mono small">{{ '{:,}'.format(r.rule.hitCounts) if r.rule and r.rule.hitCounts is not none else '-' }}</td>
           <td class="small">{{ r.rule.state if r.rule else '-' }}</td>
         </tr>
       {% endfor %}
@@ -394,7 +534,7 @@
 <p class="muted">Device admin (TACACS+) service not enabled, or no policy sets present.</p>
 {% endif %}
 
-<h2>9. Authorization profiles &amp; dACLs</h2>
+<h2 class="section">Authorization profiles &amp; dACLs</h2>
 <h3>Authorization profiles ({{ authz_profiles|length }})</h3>
 <table>
   <thead><tr><th>Name</th><th>VLAN</th><th>dACL</th><th>Web redirect</th></tr></thead>
@@ -420,7 +560,7 @@
   </tbody>
 </table>
 
-<h2>10. TrustSec</h2>
+<h2 class="section">TrustSec</h2>
 {% if sgts %}
 <p class="small">{{ sgts|length }} SGTs · {{ sgacls|length }} SGACLs · {{ egress_matrix_cells|length }} egress matrix cells</p>
 <table>
@@ -439,7 +579,7 @@
 <p class="muted">TrustSec not in use or not exposed by this endpoint.</p>
 {% endif %}
 
-<h2>11. Guest &amp; portals</h2>
+<h2 class="section">Guest &amp; portals</h2>
 <p class="small">Guest types: {{ guest_types|length }} · Sponsor groups: {{ sponsor_groups|length }} · Portals: {{ portals|length }}</p>
 {% if portals %}
 <table>
@@ -452,10 +592,10 @@
 </table>
 {% endif %}
 
-<h2>12. Profiler</h2>
+<h2 class="section">Profiler</h2>
 <p class="small">{{ profiler_policies|length }} profiler policies present.</p>
 
-<h2>13. Certificates</h2>
+<h2 class="section">Certificates</h2>
 <h3>System certificates (PAN: {{ pan_hostname }})</h3>
 <table>
   <thead><tr><th>Friendly name</th><th>Used by</th><th>Expires</th><th>Signature</th></tr></thead>
@@ -473,7 +613,7 @@
 <h3>Trusted certificates</h3>
 <p class="small">{{ trusted_certs|length }} trusted certs in store.</p>
 
-<h2>14. Backups &amp; repositories</h2>
+<h2 class="section">Backups &amp; repositories</h2>
 <table>
   <thead><tr><th>Name</th><th>Protocol</th><th>Path</th><th>Server</th></tr></thead>
   <tbody>
@@ -491,7 +631,7 @@
 <p class="small muted">Schedule config keys: {{ backup_schedule_config.keys()|list }}</p>
 {% endif %}
 
-<h2>15. Authentication protocols &amp; methods</h2>
+<h2 class="section">Authentication protocols &amp; methods</h2>
 <p class="small muted">Per Allowed Protocols set, which methods are enabled. <span class="pill sev-high">weak</span> markers indicate deprecated methods that frequently survive a version migration unchanged.</p>
 {% if allowed_protocols %}
 <table>
@@ -519,7 +659,7 @@
 <p class="muted">Allowed Protocols detail not available.</p>
 {% endif %}
 
-<h2>16. Security posture</h2>
+<h2 class="section">Security posture</h2>
 <table>
   <tbody>
     <tr><td class="small" style="width:40%">FIPS mode</td><td class="small mono">{% if fips_status is mapping %}{{ fips_status.get('isEnabled', fips_status) }}{% else %}<span class="muted">not exposed by API — verify in GUI</span>{% endif %}</td></tr>
@@ -531,7 +671,7 @@
 </table>
 <p class="small muted">Rows marked "not exposed by API" couldn't be read via ERS/OpenAPI on this ISE version — the audit recommends verifying them manually in the admin UI. See the Recommendations section.</p>
 
-<h2>17. Node health &amp; operations</h2>
+<h2 class="section">Node health &amp; operations</h2>
 {% if ers_nodes %}
 <h3>Nodes (version / replication)</h3>
 <table>
@@ -557,7 +697,7 @@
   </tbody>
 </table>
 
-<h2>18. Endpoint coverage matrix</h2>
+<h2 class="section">Endpoint coverage matrix</h2>
 <p class="small muted">Which audit endpoints responded successfully. Failed endpoints typically mean the feature is disabled, the persona doesn't expose it, or the patch level predates the OpenAPI route.</p>
 <table>
   <thead><tr><th>Endpoint</th><th>OK</th><th>Detail</th></tr></thead>

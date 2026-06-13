@@ -291,8 +291,133 @@ REC_CATALOG: dict[str, dict[str, Any]] = {
             "Delete via Policy → Policy Elements → Results → Authorization → Authorization Profiles.",
         ],
     },
+    "REC-POLICY-003": {
+        "title": "Retire stale / never-hit policy rules and sets",
+        "category": "Policy",
+        "priority": "P3",
+        "effort": "1–3 hours",
+        "risk": "Low — disable before deleting; verify over a full hit window",
+        "rationale": (
+            "Each ISE rule carries a hit counter. Enabled rules with zero hits — and whole policy sets "
+            "with no recorded activity — are dead weight: they slow evaluation, obscure the rules that "
+            "actually matter, and accumulate across migrations. The counter is cumulative since the "
+            "last reset, so confirm against a representative window before removing, but a long-running "
+            "node with 0 hits on a rule is a strong cleanup signal."
+        ),
+        "steps": [
+            "In each policy set, note the rules reporting 0 hits over a meaningful period (Policy → Policy Sets shows the Hits column).",
+            "Disable (don't delete) the suspects first; leave them disabled for a billing/auth cycle.",
+            "If still 0 hits and no complaints, delete them.",
+            "For an entire set with no activity, confirm the NADs that should hit it are pointed at ISE, then retire the set if genuinely unused.",
+        ],
+    },
+    "REC-POLICY-004": {
+        "title": "Resolve shadowed / unreachable authorization rules",
+        "category": "Policy",
+        "priority": "P2",
+        "effort": "30 min per set",
+        "risk": "Medium — fixing order changes who matches what",
+        "rationale": (
+            "A rule whose condition is identical to (or fully covered by) an earlier enabled rule in the "
+            "same set can never match — ISE stops at the first hit. Shadowed rules are either dead "
+            "(harmless clutter) or a sign the intended logic never takes effect, which is a silent "
+            "policy bug."
+        ),
+        "steps": [
+            "For each flagged rule, compare its condition to the earlier rule that shadows it.",
+            "If the shadowed rule is intended to behave differently, reorder it above the broader rule or tighten the broader rule's condition.",
+            "If it's redundant, remove it.",
+            "Use Policy Test (Operations → Policy Test) to confirm the intended rule now matches.",
+        ],
+    },
+    "REC-POLICY-005": {
+        "title": "Consolidate duplicate authorization profiles",
+        "category": "Policy",
+        "priority": "P3",
+        "effort": "15 min per group",
+        "risk": "Low",
+        "rationale": (
+            "Multiple authorization profiles that push the exact same result (same VLAN / dACL / "
+            "redirect) multiply maintenance: a change has to be made in several places and it's easy to "
+            "update one and miss another. Consolidate to a single profile referenced everywhere."
+        ),
+        "steps": [
+            "Pick one canonical profile from each duplicate group.",
+            "Repoint the rules that use the others to the canonical profile.",
+            "Delete the now-unreferenced duplicates.",
+        ],
+    },
+    "REC-POLICY-006": {
+        "title": "Fix broken policy references",
+        "category": "Policy",
+        "priority": "P2",
+        "effort": "15 min per reference",
+        "risk": "Medium — a rule referencing a missing object can fail unexpectedly",
+        "rationale": (
+            "A rule that references an authorization profile or security group that no longer exists is "
+            "broken: depending on the object, ISE may fall through, deny, or error. These usually appear "
+            "after an element was deleted while a rule still pointed at it."
+        ),
+        "steps": [
+            "For each flagged rule, recreate the missing object or repoint the rule at the correct existing one.",
+            "Confirm with Policy Test that the rule now resolves.",
+            "Add a pre-delete check to your change process: search for references before removing any policy element.",
+        ],
+    },
+    "REC-POLICY-007": {
+        "title": "Remove test / temporary rules from production policy",
+        "category": "Policy",
+        "priority": "P1",
+        "effort": "30 min",
+        "risk": "High — a permissive test rule can grant unintended access fleet-wide",
+        "rationale": (
+            "Rules named like 'Test', 'Temp', or 'Allow All' that remain enabled in production are a "
+            "classic source of over-permissioned access. When such a rule also carries a high hit count, "
+            "it is actively carrying production traffic — meaning the intended, more specific rules below "
+            "it may never be evaluated, and a broad SGT/profile is being handed out widely."
+        ),
+        "steps": [
+            "Identify what the test rule grants and how many sessions depend on it (Hits column + Live Logs).",
+            "Build/verify the correct specific rule(s) that should be matching that traffic instead.",
+            "Reorder so the specific rules sit above, then disable the test rule and watch Live Logs.",
+            "Once traffic shifts to the intended rules with no denials, delete the test rule.",
+        ],
+    },
+    "REC-POLICY-008": {
+        "title": "End every policy set with an explicit DenyAccess default",
+        "category": "Policy",
+        "priority": "P2",
+        "effort": "5 min per set",
+        "risk": "Low",
+        "rationale": (
+            "An explicit DenyAccess default rule makes the set's fail-closed behavior unambiguous and "
+            "auditable. A set whose last rule is anything else (or which relies on implicit behavior) is "
+            "harder to reason about and can mask an unintended permit."
+        ),
+        "steps": [
+            "Open the policy set and check the final default rule.",
+            "Set the default authorization result to DenyAccess unless there is a documented reason otherwise.",
+            "Confirm upstream rules intentionally permit only what they should.",
+        ],
+    },
 
     # -------------------- DEVICE ADMIN --------------------
+    "REC-TACACS-002": {
+        "title": "Review TACACS+ rules with no shell profile or command set",
+        "category": "Device admin",
+        "priority": "P3",
+        "effort": "10 min per rule",
+        "risk": "Low",
+        "rationale": (
+            "A device-admin authorization rule that assigns neither a shell profile nor a command set "
+            "grants nothing — it is either a misconfiguration (the admin forgot to attach a result) or "
+            "leftover scaffolding. Either way it adds noise to the policy."
+        ),
+        "steps": [
+            "For each flagged rule, decide the intended result and attach the correct shell profile and/or command set.",
+            "If the rule serves no purpose, delete it.",
+        ],
+    },
     "REC-TACACS-001": {
         "title": "Refactor TACACS+ per-command authorization to deny-list shell profiles",
         "category": "Device admin",

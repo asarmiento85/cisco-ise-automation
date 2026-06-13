@@ -632,6 +632,14 @@ def analyze(data: dict[str, Any]) -> list[dict]:
     if data.get("radius_sequences"):
         f.append(_finding("info", "Identity", f"{len(data['radius_sequences'])} RADIUS server sequence(s) present — confirm external proxy targets still valid post-migration.", "radius_sequences", "REC-STALE-001"))
 
+    # =====================================================================
+    # POLICY ANALYSIS (hits / duplicates / shadowing / stale)
+    # =====================================================================
+    from ise_api.policy_analysis import analyze_policies, policy_findings
+    pa = analyze_policies(data)
+    data["policy_analysis"] = pa  # stash for the report section
+    f.extend(policy_findings(pa))
+
     # sort severity
     order = {s: i for i, s in enumerate(_SEVERITIES)}
     f.sort(key=lambda x: (order.get(x["severity"], 99), x["category"]))

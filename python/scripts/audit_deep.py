@@ -119,6 +119,7 @@ def render_html(data: dict, findings: list[dict], summary: dict, recommendations
         pxgrid_settings=data.get("pxgrid_settings"),
         profiler_feed=data.get("profiler_feed"),
         radius_sequences=data.get("radius_sequences", []),
+        policy_analysis=data.get("policy_analysis", {}),
     )
 
 
